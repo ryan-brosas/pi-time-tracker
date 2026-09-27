@@ -1,4 +1,5 @@
 /node_modules/
+/.idea/
 /exports/
 /.pi/
 /assets/cover-drafts/
@@ -7,3 +8,6 @@
 *.jsonl
 *.log
 .DS_Store
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

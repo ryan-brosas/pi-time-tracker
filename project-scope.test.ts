@@ -18,7 +18,7 @@ test("default root comes from the Pi context and stays isolated across reused fa
   try {
     const aRoot = join(parent, "a"), bRoot = join(parent, "b"); mkdirSync(aRoot); mkdirSync(bRoot);
     let now = Date.parse("2026-09-27T00:00:00Z");
-    const factory = createTimeTrackingExtension(undefined, { now: () => now, timezones: ["UTC"] });
+    const factory = createTimeTrackingExtension(undefined, { now: () => now, timezones: ["UTC"], databasePath: join(parent, "shared.sqlite") });
     const a = host(factory, aRoot), b = host(factory, bRoot);
     expect(existsSync(join(aRoot, "exports"))).toBe(false);
     a.emit("session_start"); b.emit("session_start");
@@ -41,7 +41,7 @@ test("an explicit project adapter preserves scope, command aliases and timezones
   const root = mkdtempSync(join(tmpdir(), "pi-time-tracker-adapter-"));
   try {
     let now = 1000;
-    const h = host(createTimeTrackingExtension(root, { scopePrefix: "client", legacyCommandNames: ["client-time"], timezones: ["UTC"], now: () => now }), root);
+    const h = host(createTimeTrackingExtension(root, { scopePrefix: "client", legacyCommandNames: ["client-time"], timezones: ["UTC"], now: () => now, databasePath: join(root, "db.sqlite") }), root);
     h.emit("session_start"); h.emit("agent_start"); now += 2000; h.emit("agent_settled");
     expect(h.commands.has("client-time")).toBe(true);
     expect(readTurnRecords(join(root, "exports", "pi-worktime.jsonl"))[0].scope).toBe("client-pi-turn");

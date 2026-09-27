@@ -11,7 +11,7 @@ function setup() {
   let clock = Date.parse("2026-09-26T15:59:00Z");
   const events = new Map<string, any>(), commands = new Map<string, any>(), tools = new Map<string, any>();
   const notices: string[] = [];
-  const logs = { turnsLog: join(root, "turns.jsonl"), chunksLog: join(root, "chunks.jsonl"), sessionsLog: join(root, "sessions.jsonl"), activitiesLog: join(root, "activities.jsonl"), reportFile: join(root, "report.md") };
+  const logs = { databasePath: join(root, "db.sqlite"), turnsLog: join(root, "turns.jsonl"), chunksLog: join(root, "chunks.jsonl"), sessionsLog: join(root, "sessions.jsonl"), activitiesLog: join(root, "activities.jsonl"), reportFile: join(root, "report.md") };
   const ctx = { cwd: root, mode: "json", sessionManager: { getSessionId: () => "test-session" }, ui: { notify: (s: string) => notices.push(s), setStatus: () => {} } };
   createTimeTrackingExtension(root, { ...logs, scopePrefix: "test", timezones: ["Asia/Manila"], now: () => clock })({ on: (n: string, fn: any) => events.set(n, fn), registerCommand: (n: string, d: any) => commands.set(n, d), registerTool: (d: any) => tools.set(d.name, d) } as any);
   return { root, logs, events, commands, tools, ctx, notices, at: (iso: string) => { clock = Date.parse(iso); }, emit: (name: string, event: any = {}) => events.get(name)?.(event, ctx), report: () => { commands.get("work").handler("report", ctx); return readFileSync(logs.reportFile, "utf8"); } };

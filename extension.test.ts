@@ -27,7 +27,7 @@ test("records turns, deduplicates concurrent tabs by interval union, and support
   };
   let clock = 1_000_000;
   const options: TimeTrackingOptions = {
-    ...logs, scopePrefix: "test", commandPrefix: "work",
+    ...logs, scopePrefix: "test", commandPrefix: "work", databasePath: join(root, "auto.sqlite"),
     timezones: ["Asia/Manila"], legacyCommandNames: ["legacy-time"], now: () => clock,
   };
   const a = harness(root, options);
@@ -111,7 +111,7 @@ test("labels each turn from the request text, with tool names as fallback", () =
     sessionsLog: join(root, "s.jsonl"), reportFile: join(root, "report.md"),
   };
   let clock = 1_000_000;
-  const options: TimeTrackingOptions = { ...logs, scopePrefix: "test", timezones: ["Asia/Manila"], now: () => clock };
+  const options: TimeTrackingOptions = { ...logs, scopePrefix: "test", databasePath: join(root, "auto.sqlite"), timezones: ["Asia/Manila"], now: () => clock };
   const a = harness(root, options);
   const notices: string[] = [];
   const ctx = { cwd: root, mode: "tui", ui: { notify: (message: string) => notices.push(message), setStatus: () => {} } };
