@@ -1,27 +1,97 @@
+<div align="center">
+
 # pi-time-tracker
 
-![Blue clock and pi-time-tracker wordmark](assets/cover.png)
+**Working-hours tracking for Pi, reconciled in native Bend.**
 
-Local working-hours receipts for Pi, with native Bend reconciliation and consistency checks.
+_Keep local work receipts, reconcile overlapping activity, and review the hours._
 
-[Repository](https://github.com/ryan-brosas/pi-time-tracker) · [CI](https://github.com/ryan-brosas/pi-time-tracker/actions/workflows/ci.yml)
+<p>
+  <img src="assets/cover.png" alt="Blue clock and pi-time-tracker wordmark"
+       width="960">
+</p>
 
-The source repository is public; work records stay private and local. This is not an npm release. No open-source license has been granted: the package remains `UNLICENSED` and `private: true` until the owner chooses a distribution license.
+[![checks][checks-badge]][checks]
+[![Pi extension][pi-badge]](index.ts)
+[![Bun 1.4.0][bun-badge]](.github/workflows/ci.yml)
+[![License: UNLICENSED][license-badge]](#license)
 
-## What it does
+</div>
 
-- Automatically records Pi activity in the tracked project and its real subdirectories.
-- Excludes blocking prompt waits and limits silent gaps to five minutes.
-- Saves event-driven checkpoints so a missing final summary does not erase all evidence.
-- Uses native Bend to deduplicate overlapping intervals and audit missing, duplicate or conflicting receipts.
-- Provides a separate explicit session clock and a `work_note` tool for concise, sanitized outcomes.
-- Produces daily working-hours drafts. No external sync, model calls, background service or automatic invoicing.
+## Run
 
-Tracking is partial evidence, not a confirmed full-day timesheet. Missing coverage and open session ends stay Unknown. Notes never create additional duration. Review working hours before using them in a timesheet or invoice.
+After [installing](#install) the extension, run this inside your Pi session:
 
-## Install and activate
+```text
+/work report
+```
 
-Requirements: a Pi 0.87.1-compatible host, a native Bend compiler (tested with 2.0.7 and 2.0.31), Clang compatible with that compiler, and Bun for development checks. CI uses Bun 1.4.0, Bend 2.0.31 and Clang 19 on Linux x64. Install Bend using its [official instructions](https://bend-lang.com/); older and current releases have different installation layouts.
+Pi activity is tracked automatically in the project where the extension is
+loaded. The command writes a daily working-hours draft to
+`exports/work-report.md`; there is no web server or background service.
+
+## Why pi-time-tracker?
+
+Work can span several Pi turns and tabs. Adding their durations can double-count
+an overlap, and a silent gap does not prove continuous work. This extension keeps
+inspectable receipts and reconciles them without rewriting the original records.
+
+| | Capability | What it unlocks |
+| :-: | --- | --- |
+| ⏱️ | **Automatic tracking** | Capture activity within a project and its real subdirectories. |
+| 🔀 | **Overlap reconciliation** | Count concurrent tabs once using native Bend interval union. |
+| 🧾 | **Receipt auditing** | Surface missing evidence, duplicate receipts and conflicting summaries. |
+| 💾 | **Event-driven checkpoints** | Retain interval evidence when a final turn summary is missing. |
+| 📝 | **Work notes and session clock** | Record outcomes and explicit start/stop sessions separately. |
+| 🔒 | **Local records** | Keep work data in your project, with no external sync or automatic invoicing. |
+
+## How it fits
+
+```mermaid
+flowchart LR
+  Pi["Pi events and /work"] --> Adapter["TypeScript extension"]
+  Adapter --> Receipts[("Local receipts")]
+  Receipts --> Bridge["Native bridge"]
+  Bridge --> Bend["Bend reconciliation and audit"]
+  Bend --> Report["TypeScript report renderer"]
+  Report --> Draft["work-report.md"]
+```
+
+[index.ts](index.ts) is the package entry point. [extension.ts](extension.ts)
+owns Pi hooks and project scope; [ledger.ts](ledger.ts) owns persistence and
+calendar boundaries. [native.ts](native.ts) sends numeric batches to
+[engine.bend](engine.bend) and [audit.bend](audit.bend).
+[report.ts](report.ts) renders the results, while [activities.ts](activities.ts)
+validates outcome notes. There is no parallel JavaScript implementation of
+interval union or receipt classification.
+
+## Install
+
+You need a Pi 0.87.1-compatible host, Bun, native Bend and a Clang version
+compatible with that Bend release. Follow the [official Bend installation
+instructions][bend]. The tracker never installs or upgrades your compiler.
+
+CI tests Linux x64 with Bun 1.4.0, Bend 2.0.31 and Clang 19. Bend 2.0.7 has also
+passed the suite locally; installation layouts differ between those releases.
+
+### Install the command
+
+The `/work` commands come from this Pi extension, not a standalone application.
+Prepare a checkout using [Run from source](#run-from-source), then run this from
+**the project you want to track**:
+
+```sh
+pi install /absolute/path/to/pi-time-tracker --local
+```
+
+Replace the path with your checkout location. Approve project trust yourself and
+use `/reload` at an idle boundary. Load the package only once: use its default
+entry point or a project-specific adapter, never both.
+
+You can instead add `/absolute/path/to/pi-time-tracker/index.ts` to your project's
+`.pi/settings.json` extensions list.
+
+### Run from source
 
 ```sh
 git clone https://github.com/ryan-brosas/pi-time-tracker.git
@@ -32,78 +102,178 @@ bun run check
 bun run test
 ```
 
-Add the local package to a project with `pi install /absolute/path/to/pi-time-tracker --local`, or add `/absolute/path/to/pi-time-tracker/index.ts` to that project's `.pi/settings.json` extensions list. Load it only once: choose the package entry point or a project adapter, not both. Approve project trust yourself and use `/reload` at an idle boundary.
+There is no separate JavaScript build step. The first data-bearing report or
+reconciliation command compiles the native Bend engine if it is not cached.
 
-The default entry point binds to Pi's initial context working directory, not the package checkout and not `process.cwd()`. It uses the `work` scope and the host's local timezone. That root remains pinned for the loaded runtime; reload when changing projects. Each factory invocation has independent state.
+## Usage
 
-For a project-specific adapter, import `createTimeTrackingExtension` from `index.ts` and supply an explicit root and options:
+These are Pi slash commands, not shell commands:
+
+```text
+/work start documentation
+/work status
+/work stop finished the README
+/work time
+/work report
+```
+
+| Command or tool | What it does |
+| --- | --- |
+| `/work start [label]` | Start an explicit session clock. |
+| `/work stop [note]` | Close the session; its hours remain pending review. |
+| `/work status` | Show whether a session is open. |
+| `/work time` | Show the native interval-union total, excluding legacy aggregates. |
+| `/work report [YYYY-MM-DD]` | Write a daily report, optionally from a date onward. |
+| `work_note` | Let the agent record a sanitized outcome and evidence status, without adding time. |
+
+`work_note` is a model-callable tool, not a slash command. The extension guides
+the agent to record completed milestones, but it cannot guarantee a note for
+every turn. It makes no model calls of its own.
+
+### Project configuration
+
+By default, the tracker binds to Pi's initial context working directory, not the
+package checkout or `process.cwd()`. It uses the `work` scope and your host's
+local timezone. The root stays pinned for that loaded runtime; reload when
+changing projects. Separate factory invocations keep independent state.
+
+For an explicit project root, scope or timezone, use an adapter:
 
 ```ts
-import { createTimeTrackingExtension } from "/absolute/path/to/pi-time-tracker/index.ts";
+import { createTimeTrackingExtension } from "/path/to/pi-time-tracker/index.ts";
 
-export default createTimeTrackingExtension("/absolute/path/to/project", {
+export default createTimeTrackingExtension("/path/to/project", {
   scopePrefix: "client",
   timezones: ["UTC"],
   legacyCommandNames: ["client-time"],
 });
 ```
 
-Commands, file paths, the clock and native executable/cache paths are configurable through `TimeTrackingOptions`. The built-in draft label registry lives in `labels.ts`; labels are heuristics, not verified descriptions of all work.
+[TimeTrackingOptions](extension.ts) also exposes command names, storage paths,
+the clock and native settings. Factory options take precedence over native
+executable/cache environment defaults.
 
-## Commands
+- `BEND_EXECUTABLE` selects the compiler; the default is `bend` on `PATH`.
+- `WORKTIME_BEND_BINARY` selects a trusted prebuilt engine instead of compiling.
+- `XDG_CACHE_HOME` sets the cache base, defaulting to `~/.cache`. The engine lives
+  under `pi-worktime-native`.
 
-- `/work start [label]`, `/work stop [note]`, `/work status`: explicit session clock.
-- `/work time`: native interval-union total, excluding legacy aggregates.
-- `/work report [YYYY-MM-DD]`: per-day report in the configured timezones. The optional date selects days on or after it.
-- `work_note`: model-callable tool recording one sanitized outcome with a verification status and evidence references. The agent receives guidance to use it at completed milestones, but a note is not guaranteed for every turn.
+The corresponding factory options are `bendExecutable`, `nativeExecutable` and
+`cacheDir`. Rebuild prebuilt engines after changing Bend policy. Compiler calls
+disable Bend telemetry and automatic updates.
 
-Session-clock hours and tracked activity are separate views. Do not add overlapping time twice. A note's recording time does not prove the publication time of an older artifact. Unsupported activity-level duration remains Unallocated.
+### Local storage and privacy
 
-## Native Bend responsibilities
+Records belong to the tracked project, not the extension's checkout:
 
-`engine.bend` owns interval ordering, merging and totals. `audit.bend` owns receipt classification: consistent, legacy, missing intervals, checkpoint-only, mismatched totals and conflicting summaries.
+| File under `exports/` | Contents |
+| --- | --- |
+| `pi-worktime.jsonl` | Per-turn summaries. |
+| `pi-worktime-chunks.jsonl` | Counted intervals and checkpoint identity. |
+| `work-sessions.jsonl` | Explicit session-clock events. |
+| `work-activities.jsonl` | Timestamped outcome notes. |
+| `work-report.md` | Generated working-hours draft. |
 
-Exact duplicate summaries are idempotent. Summaries sharing an ID but differing in normalized metadata are conflicts, not a last-writer-wins update. Ambiguous summary labels and legacy amounts are excluded from the report, while independent interval evidence is retained. Unsupported interval markers and fractional milliseconds are rejected rather than silently treated as legacy. These are consistency checks, not cryptographic authentication.
+Exclude these files from Git in every project where you enable tracking. They
+are written with mode `0600`. Automatic capture does not persist prompts, tool
+arguments or file contents. Keep credentials, customer data and private messages
+out of free-text labels and notes. The `work_note` validator rejects common
+credential and email patterns and query-bearing URLs; it is not complete
+data-loss prevention.
 
-`native.ts` prepares numeric transport and manages bounded child processes. `extension.ts` owns Pi hooks, `ledger.ts` owns persistence/calendar boundaries, `activities.ts` owns evidence notes, and `report.ts` renders native results. There is no parallel JavaScript implementation of interval union or receipt classification.
+Bend receives numeric IDs, timestamps, durations, counts and flags, not summary
+text or labels. Its private temporary input files are removed after each command.
+Source ledgers are not rewritten; malformed lines and missing or conflicting
+evidence are disclosed in the report.
 
-The first data-bearing command compiles an engine into `$XDG_CACHE_HOME/pi-worktime-native`, defaulting to `~/.cache/pi-worktime-native`. The cache hash includes every local `.bend` module. Build calls disable Bend launcher telemetry and automatic updates. Nothing upgrades or installs a compiler automatically.
+### Reading a report
 
-`BEND_EXECUTABLE` selects the compiler. `WORKTIME_BEND_BINARY` selects a trusted prebuilt engine. Factory options also include `bendExecutable`, `nativeExecutable` and `cacheDir`. Prebuilt engines must be rebuilt after Bend changes. The original interval CLI protocol remains supported; receipt auditing adds the `audit` mode. Each numeric batch is limited to just under 8 MiB and fails explicitly if too large. There is no silent JavaScript fallback.
+- Session-clock hours and tracked activity are separate views. Do not add the
+  same time twice.
+- Blocking prompt waits are excluded. Silent gaps are capped at five minutes;
+  that cap is an estimate, not proof of uninterrupted work.
+- Missing coverage and open session ends stay **Unknown**. Work outside Pi and
+  uncaptured time need separate evidence or confirmation.
+- Labels are heuristic drafts. Per-label totals can overlap across concurrent
+  sessions, even though the overall interval total is deduplicated.
+- Notes never create duration. Their recording time does not establish an older
+  artifact's publication time; unsupported activity duration stays Unallocated.
+- Legacy aggregates are not added to interval totals. Conflicting summaries do
+  not use last-writer-wins selection; independent interval evidence is retained.
 
-## Storage and privacy
+Checkpoints help recover from interrupted processes. They are not backups or
+power-loss guarantees. Review the report before using it in a timesheet or invoice.
 
-The default files belong to the tracked project, under its `exports/` directory:
+## Documentation
 
-- `pi-worktime.jsonl`: per-turn summaries.
-- `pi-worktime-chunks.jsonl`: counted intervals and checkpoint identity.
-- `work-sessions.jsonl`: explicit session-clock events.
-- `work-activities.jsonl`: timestamped outcome notes.
-- `work-report.md`: generated draft.
+- [Package entry point and factory](index.ts)
+- [Project options and Pi integration](extension.ts)
+- [Native interval engine](engine.bend) and [receipt audit](audit.bend)
+- [Native transport and cache](native.ts)
+- [Draft label registry](labels.ts)
+- [CI workflow](.github/workflows/ci.yml)
+- [Security and private vulnerability reporting](SECURITY.md)
+- [Report a bug][issues]
 
-Ignore these files in every project where tracking is enabled. They are written with mode 0600. Automatic capture does not persist prompts, tool arguments or file contents. Keep credentials, customer data and private messages out of all free-text labels and notes. Note validation rejects common email/credential patterns and query-bearing URLs, but is not a complete data-loss-prevention system.
+### Development and contributions
 
-Bend receives numeric group IDs, timestamps, durations, counts, flags and interned variant IDs in private temporary files, removed after each command. No summary text or labels are sent to it. Existing ledgers are not rewritten or migrated; malformed lines and missing/conflicting evidence are disclosed.
+Run `bun run check` and `bun run test` before proposing a change. The suite covers
+interval properties, checkpoints, waits, project isolation, midnight/DST
+boundaries, privacy, receipt replay/conflicts, malformed transport, imported-module
+cache invalidation and real Pi registration. Its timeout allows cold compilation.
 
-Checkpoints support process recovery, not power-loss guarantees or backups. Non-Pi work, work before tracking began, uncaptured gaps and breaks need separate evidence or confirmation.
+[CI][checks] runs the same gates on pushes to `main` and pull requests, using
+read-only permissions and SHA-pinned Actions. Main requires a PR and the `quality`
+check. [Dependabot](.github/dependabot.yml) proposes weekly Action-pin updates;
+it does not merge them.
 
-## Development checks
+The [CI installer](scripts/install-bend-ci.sh) verifies the SHA-256 of an exact
+official Bend release and installs into a new explicitly supplied directory.
+It will not replace an existing compiler. Update its version and digest together
+and run the full suite before changing the pin.
 
-Keep Pi callbacks, filesystem access and IANA timezone handling in their host adapter. Put deterministic accounting policy in the side-effect-free Bend reducer, not a per-event subprocess. Preserve or version wire contracts, include imported modules in the build hash, and test the actual compiled executable and Pi loader. Accumulate output rows and join once rather than repeatedly appending a growing string.
+Keep Pi callbacks, filesystem access and timezone handling in the TypeScript
+host. Put deterministic accounting policy in the side-effect-free Bend reducer,
+not a per-event subprocess. Preserve or version the wire contracts; include all
+local `.bend` modules in the cache key and test the actual compiled executable.
+Build output rows and join once instead of repeatedly appending a growing string.
 
-Tests cover interval properties, checkpoints, pauses, scope escapes, independent host projects, midnight/DST boundaries, privacy, receipt replay/conflicts, wire rejection, imported-module cache invalidation and real Pi registration. Use `bun run check` and `bun run test` before changing a consuming project's adapter. The test timeout accommodates cold native compilation.
+The bridge supports `worktime-v1` intervals and `worktime-audit-v1` receipts.
+Numeric batches are limited to just under 8 MiB and fail explicitly when too
+large. Unsupported interval markers and fractional milliseconds are rejected;
+there is no silent JavaScript fallback. Receipt checks detect consistency
+problems, not cryptographic tampering.
 
-The `CI` workflow runs those same gates on pushes to `main` and pull requests, with read-only permissions and SHA-pinned Actions. `scripts/install-bend-ci.sh` downloads an exact official Bend release, verifies its SHA-256, and installs only into a new explicitly supplied directory. It does not modify an existing compiler. Update its version and digest together and verify the full suite before changing the pin. Dependabot proposes weekly Action-pin updates; it does not merge them.
+Use the [PR template](.github/pull_request_template.md) and synthetic reproductions.
+Never attach real work ledgers, private reports or unredacted conversations to a
+public issue or pull request.
 
-Use synthetic reproductions in issues and pull requests. Never publish your `exports/` directory or real activity notes.
+### Prior art
 
-## Source-grounded reference
+[pi-ledger's receipt verification][prior-verifier] and its
+[integrity tests][prior-tests], pinned at commit
+`29cd1b0edd99727bac2cbb9b2003bebbb457c593`, informed the inspectable receipts and
+explicit evidence states. Signing/key management and token-normalized billing
+were not adopted. The native implementation and its regression tests establish
+this tracker's behavior; the reference is not proof that this code works.
 
-Sourcebot supplied pinned source from [inloopstudio-team/pi-ledger](https://github.com/inloopstudio-team/pi-ledger) at `29cd1b0edd99727bac2cbb9b2003bebbb457c593`:
+> [!WARNING]
+> This is an early project with no published npm release. Working-hours reports
+> are reviewable drafts, not a confirmed full-day timesheet or an automated
+> billing decision.
 
-- [`verifySidecarChain`](https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/index.ts#L966-L1015).
-- Its [direct integrity tests](https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/__tests__/notarization.test.ts#L234-L281).
+## License
 
-Adapted: inspectable receipts, explicit evidence states, and reporting inconsistencies instead of silently accepting them. Omitted: signing/key management, token-normalized billing and the reference's business policy. No reference source code was copied. Our audit cannot provide its cryptographic guarantees.
+**UNLICENSED.** No open-source license has been selected. Public visibility does
+not grant an open-source reuse license. The package remains `private: true` to
+prevent accidental npm publication.
 
-This working tree and the Bend compiler were not indexed during that review. Local source, installed `Base` definitions, SDK checks and regression tests establish current behavior. The indexed reference is prior art, not proof that this code works.
+[checks-badge]: https://img.shields.io/github/actions/workflow/status/ryan-brosas/pi-time-tracker/ci.yml?branch=main&style=for-the-badge&label=checks
+[checks]: https://github.com/ryan-brosas/pi-time-tracker/actions/workflows/ci.yml
+[pi-badge]: https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge
+[bun-badge]: https://img.shields.io/badge/Bun-1.4.0-339933?style=for-the-badge&logo=bun&logoColor=white
+[license-badge]: https://img.shields.io/badge/license-UNLICENSED-f4c430?style=for-the-badge
+[bend]: https://bend-lang.com/
+[issues]: https://github.com/ryan-brosas/pi-time-tracker/issues
+[prior-verifier]: https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/index.ts#L966-L1015
+[prior-tests]: https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/__tests__/notarization.test.ts#L234-L281
