@@ -223,9 +223,9 @@ boundaries, privacy, receipt replay/conflicts, malformed transport, imported-mod
 cache invalidation and real Pi registration. Its timeout allows cold compilation.
 
 [CI][checks] runs the same gates on pushes to `main` and pull requests, using
-read-only permissions and SHA-pinned Actions. Main requires a PR and the `quality`
-check. [Dependabot](.github/dependabot.yml) proposes weekly Action-pin updates;
-it does not merge them.
+read-only permissions and SHA-pinned Actions. Direct pushes to `main` are allowed;
+CI reports the `quality` check after each push. [Dependabot](.github/dependabot.yml)
+proposes weekly Action-pin updates; it does not merge them.
 
 The [CI installer](scripts/install-bend-ci.sh) verifies the SHA-256 of an exact
 official Bend release and installs into a new explicitly supplied directory.
