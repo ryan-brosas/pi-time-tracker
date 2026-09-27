@@ -1,0 +1,8 @@
+/node_modules/
+/exports/
+/.pi/
+.env
+.env.*
+*.jsonl
+*.log
+.DS_Store
