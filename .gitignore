@@ -1,6 +1,7 @@
 /node_modules/
 /exports/
 /.pi/
+/assets/cover-drafts/
 .env
 .env.*
 *.jsonl

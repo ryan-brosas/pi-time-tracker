@@ -1,5 +1,7 @@
 # pi-time-tracker
 
+![Blue clock and pi-time-tracker wordmark](assets/cover.png)
+
 Local working-hours receipts for Pi, with native Bend reconciliation and consistency checks.
 
 [Repository](https://github.com/ryan-brosas/pi-time-tracker) · [CI](https://github.com/ryan-brosas/pi-time-tracker/actions/workflows/ci.yml)
