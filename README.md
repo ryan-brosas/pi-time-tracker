@@ -399,6 +399,10 @@ mode. No Varve code was copied.
 not grant an open-source reuse license. The package remains `private: true` to
 prevent accidental npm publication.
 
+---
+
+Powered by [Coral Bricks](https://coralbricks.ai).
+
 [checks-badge]: https://img.shields.io/github/actions/workflow/status/ryan-brosas/pi-time-tracker/ci.yml?branch=main&style=for-the-badge&label=checks
 [checks]: https://github.com/ryan-brosas/pi-time-tracker/actions/workflows/ci.yml
 [pi-badge]: https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge
