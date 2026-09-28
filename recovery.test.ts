@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTimeTrackingExtension } from "./extension";
@@ -9,7 +9,7 @@ import { buildWorkReport } from "./report";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "worktime-recovery-"));
-  const options = { root, scopePrefix: "test", timezones: ["America/Los_Angeles", "Asia/Manila"], now: Date.parse("2026-09-27T12:00:00Z"), sinceDay: null, turnsLog: join(root, "turns"), chunksLog: join(root, "chunks"), sessionsLog: join(root, "sessions"), activitiesLog: join(root, "notes") };
+  const options = { root, scopePrefix: "test", timezones: ["America/Los_Angeles", "Asia/Manila"], now: Date.parse("2026-09-27T12:00:00Z"), sinceDay: null, databasePath: join(root, "db.sqlite"), turnsLog: join(root, "turns"), chunksLog: join(root, "chunks"), sessionsLog: join(root, "sessions"), activitiesLog: join(root, "notes") };
   return options;
 }
 
@@ -33,9 +33,11 @@ test("nested prompts, session replacement and workspace escapes never add waitin
   const ctx = { cwd: f.root, mode: "json", sessionManager: { getSessionId: () => "s1" }, ui: { notify: () => {}, setStatus: () => {} } };
   createTimeTrackingExtension(f.root, { ...f, now: () => now })({ on: (n: string, h: any) => events.set(n, h), registerTool: () => {}, registerCommand: (n: string, h: any) => commands.set(n, h) } as any);
   const event = (name: string, at: number, data: any = {}) => { now = at; return events.get(name)(data, ctx); };
-  event("session_start", 1000); event("before_agent_start", 1000, { prompt: "Reddit research" }); event("agent_start", 1000);
+  event("session_start", 1000); expect(statSync(f.databasePath).mode & 0o777).toBe(0o600);
+  event("before_agent_start", 1000, { prompt: "Reddit research" }); event("agent_start", 1000);
   event("ui_prompt_start", 2000); event("ui_prompt_start", 3000); event("ui_prompt_end", 300000); event("message_update", 350000); event("ui_prompt_end", 400000); event("message_update", 402000);
   event("session_before_switch", 900000);
+  event("session_shutdown", 900000); // only a confirmed replacement tears down the runtime
   expect(readTurnRecords(f.turnsLog)[0].observedMs).toBe(3000); expect(readTurnRecords(f.turnsLog)[0].outcome).toBe("interrupted");
   event("session_start", 1000000); event("agent_start", 1000000); event("message_update", 1001000);
   ctx.cwd = tmpdir(); event("message_update", 1100000); event("agent_settled", 1200000);
