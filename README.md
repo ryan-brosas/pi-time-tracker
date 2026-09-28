@@ -107,10 +107,15 @@ install the Git-hosted Pi package from the workspace you want to track:
 pi install git:github.com/ryan-brosas/pi-time-tracker --local
 ```
 
-For a reproducible install, append `@<commit-sha>` to the Git source. Once
-`pi-time-tracker@0.1.0` appears on npm, you can instead use
-`pi install npm:pi-time-tracker@0.1.0 --local`. Approve
-project trust yourself and use `/reload` at an idle boundary. Load the package
+For a reproducible Git install, append `@<commit-sha>` to the source. The
+[published npm package](https://www.npmjs.com/package/pi-time-tracker) can also be
+installed without cloning:
+
+```sh
+pi install npm:pi-time-tracker@0.1.0 --local
+```
+
+Approve project trust yourself and use `/reload` at an idle boundary. Load the package
 only once: use its default entry point or a project-specific adapter, never both.
 
 For a single project, you can instead add
