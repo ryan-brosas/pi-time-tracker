@@ -14,7 +14,7 @@ _Keep local work receipts, reconcile overlapping activity, and review the hours.
 [![checks][checks-badge]][checks]
 [![Pi extension][pi-badge]](index.ts)
 [![Bun 1.4.0][bun-badge]](.github/workflows/ci.yml)
-[![License: UNLICENSED][license-badge]](#license)
+[![License: MIT][license-badge]](LICENSE)
 
 </div>
 
@@ -107,7 +107,9 @@ install the Git-hosted Pi package from the workspace you want to track:
 pi install git:github.com/ryan-brosas/pi-time-tracker --local
 ```
 
-For a reproducible install, append `@<commit-sha>` to the Git source. Approve
+For a reproducible install, append `@<commit-sha>` to the Git source. Once
+`pi-time-tracker@0.1.0` appears on npm, you can instead use
+`pi install npm:pi-time-tracker@0.1.0 --local`. Approve
 project trust yourself and use `/reload` at an idle boundary. Load the package
 only once: use its default entry point or a project-specific adapter, never both.
 
@@ -373,6 +375,14 @@ read-only permissions and SHA-pinned Actions. Direct pushes to `main` are allowe
 CI reports the `quality` check after each push. [Dependabot](.github/dependabot.yml)
 proposes weekly Action-pin updates; it does not merge them.
 
+The [npm release workflow](.github/workflows/npm-publish.yml) is manual and runs
+only from `main`. It rejects an already-published version, reruns these gates,
+and publishes the packed artifact with OIDC provenance. It requires the npm
+package's trusted publisher to name `ryan-brosas/pi-time-tracker` and
+`npm-publish.yml`, with no environment. Never add a registry token to GitHub
+Actions. npm's first-package bootstrap must be completed before this publisher
+can be configured; a Git push alone does not publish to npm.
+
 The [CI installer](scripts/install-bend-ci.sh) verifies the SHA-256 of an exact
 official Bend release and installs into a new explicitly supplied directory.
 It will not replace an existing compiler. Update its version and digest together
@@ -413,15 +423,13 @@ processes sharing one store, so the embedded database here is SQLite in WAL
 mode. No Varve code was copied.
 
 > [!WARNING]
-> This is an early project with no published npm release. Install it as a Pi
-> package from Git for now. Working-hours reports are reviewable drafts, not a
-> confirmed full-day timesheet or an automated billing decision.
+> This is an early project. Until the version you want is listed on npm,
+> install the Pi package from Git. Working-hours reports are reviewable drafts,
+> not a confirmed full-day timesheet or an automated billing decision.
 
 ## License
 
-**UNLICENSED.** No open-source license has been selected. Public visibility does
-not grant an open-source reuse license. The package remains `private: true` to
-prevent accidental npm publication.
+[MIT](LICENSE). Copyright © 2026 Ryan Brosas.
 
 ---
 
@@ -431,7 +439,7 @@ Powered by [Coral Bricks](https://coralbricks.ai).
 [checks]: https://github.com/ryan-brosas/pi-time-tracker/actions/workflows/ci.yml
 [pi-badge]: https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge
 [bun-badge]: https://img.shields.io/badge/Bun-1.4.0-339933?style=for-the-badge&logo=bun&logoColor=white
-[license-badge]: https://img.shields.io/badge/license-UNLICENSED-f4c430?style=for-the-badge
+[license-badge]: https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge
 [bend]: https://bend-lang.com/
 [issues]: https://github.com/ryan-brosas/pi-time-tracker/issues
 [prior-verifier]: https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/index.ts#L966-L1015

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Validates the shippable Pi package payload without network or npm access.
 // Install command: bun run pack:check
-import { readdirSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, normalize } from "node:path";
 
 const root = join(import.meta.dir, "..");
@@ -9,18 +9,14 @@ const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const failures = [];
 const fail = (message) => failures.push(message);
 
-if (manifest.private && process.env.PUBLISH !== "1") {
-  // Expected state: the package is intentionally not publishable to npm yet.
-  // Release requires an explicit license decision plus npmjs.com trusted-publisher setup.
-} else if (!manifest.private && process.env.PUBLISH !== "1") {
-  fail('package.json must stay "private": true until npm publishing is enabled (set PUBLISH=1 to check a publishable manifest)');
-}
+if (manifest.private) fail("package.json is private and cannot be published to npm");
+if (manifest.license !== "MIT" || !existsSync(join(root, "LICENSE"))) fail("MIT license metadata and LICENSE file are required");
 
 const patterns = manifest.files;
 if (!Array.isArray(patterns) || !patterns.length) fail("package.json needs a non-empty files whitelist to keep the tarball small");
 
 /** Minimal npm semantics for the simple patterns this package uses. */
-const select = (list, allow) => {
+const select = (list) => {
   const negated = list.filter(p => p.startsWith("!")).map(p => p.slice(1));
   const matched = new Set();
   for (const pattern of list.filter(p => !p.startsWith("!"))) {
@@ -29,18 +25,17 @@ const select = (list, allow) => {
   for (const pattern of negated) {
     for (const hit of new Bun.Glob(pattern).scanSync({ cwd: root, dot: false, onlyFiles: true })) matched.delete(normalize(hit));
   }
-  for (const entry of allow ? (manifest.pi?.[allow] ?? []) : []) matched.add(normalize(entry.replace(/^\.\//, "")));
   return matched;
 };
 
-const shipped = select(patterns ?? [], "extensions");
+const shipped = select(patterns ?? []);
 if (!shipped.size) fail("the files whitelist matches no files");
 
 const entries = manifest.pi?.extensions;
 if (!Array.isArray(entries) || !entries.length) fail("package.json must declare pi.extensions");
 for (const entry of entries ?? []) {
   if (entry.includes("..") || !entry.startsWith("./")) fail(`pi.extensions entry must be a relative ./ path: ${entry}`);
-  else if (!existsSync(join(root, entry))) fail(`pi.extensions entry does not exist: ${entry}`);
+  else if (!shipped.has(normalize(entry.slice(2)))) fail(`pi.extensions entry is missing from the package payload: ${entry}`);
 }
 
 for (const required of ["index.ts", "engine.bend", "audit.bend"]) {
@@ -74,4 +69,4 @@ if (failures.length) {
   for (const message of failures) console.error(` - ${message}`);
   process.exit(1);
 }
-console.log(`Package payload OK: ${payloadFiles.length} files, entries ${(entries ?? []).join(", ")}${manifest.private ? " (private: npm publishing gated)" : ""}`);
+console.log(`Package payload OK: ${payloadFiles.length} files, entries ${(entries ?? []).join(", ")}`);
