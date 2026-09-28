@@ -7,7 +7,7 @@ import { labelFor, resolveSessionLabel } from "./labels.ts";
 import { appendActivity, workNoteParameters, type WorkNoteInput } from "./activities.ts";
 import { buildAutomaticReport, buildWorkReport, hours, minutes } from "./report.ts";
 import { reconcileIntervals, type NativeOptions } from "./native.ts";
-import { ProjectStore, containsPath, defaultDatabasePath, projectText, type WorkWindow, type Workspace } from "./project-store.ts";
+import { ProjectStore, containsPath, defaultDatabasePath, isSqliteBusy, projectText, repositoryRoot, type WorkWindow, type Workspace } from "./project-store.ts";
 import { AutomaticClock, DEFAULT_IDLE_GAP_MS, isHumanInput } from "./automatic.ts";
 
 export interface TimeTrackingOptions extends NativeOptions {
@@ -55,7 +55,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     const scopedCwd = (cwd: string): string | null => {
       try {
         const canonicalCwd = realpathSync(cwd);
-        if (!root) bindRoot(canonicalCwd);
+        if (!root) bindRoot(repositoryRoot(canonicalCwd));
         return containsPath(realpathSync(root), canonicalCwd) ? canonicalCwd : null;
       } catch { return null; }
     };
@@ -64,6 +64,11 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     let sessionId: string = randomUUID();
     // Automatic work-window state. Kept per loaded runtime; the SQLite store is shared across runtimes.
     let store: ProjectStore | undefined, autoClock: AutomaticClock | undefined, workspace: Workspace | undefined, task = "unlabeled", autoFailed = false, unsubscribeInput: (() => void) | undefined, liveCtx: Ctx | undefined;
+    // Writer contention is temporary: the clock keeps its evidence in memory and the next event, report or
+    // session handover retries it. The value is the earliest observation not yet applied, or null when only the write is pending.
+    const DEFERRED_LIMIT = 4;
+    const deferredClocks = new Map<AutomaticClock, number | null>();
+    let deferralNotified = false;
     const identity = (): ActivityIdentity => {
       const label = requestLabel ?? labelFor(undefined, [...turnTools]);
       return { sessionId, label: label?.label ?? "unlabeled", ...(label ? { labelSource: label.source } : {}) };
@@ -95,9 +100,47 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       if (unsubscribeInput) { try { unsubscribeInput(); } catch { /* a vanished UI subscription is not evidence */ } unsubscribeInput = undefined; }
     };
     const disableAutomatic = (ctx: Ctx, e: unknown) => {
-      autoFailed = true; clearAutomatic();
+      autoFailed = true; clearAutomatic(); deferredClocks.clear(); deferralNotified = false;
       if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Automatic work tracking disabled (error); retry on next session");
       warn(ctx, `${projectCommand}: automatic work tracking disabled — ${e instanceof Error ? e.message : String(e)}`);
+    };
+    const deferClock = (clock: AutomaticClock, observation: number | null, ctx: Ctx) => {
+      const prior = deferredClocks.get(clock);
+      const earliest = prior == null ? observation : observation == null ? prior : Math.min(prior, observation);
+      if (prior === undefined && deferredClocks.size >= DEFERRED_LIMIT) {
+        const oldest = deferredClocks.keys().next().value;
+        if (oldest) deferredClocks.delete(oldest);
+        warn(ctx, `${projectCommand}: ${DEFERRED_LIMIT} unsaved work windows are waiting on a busy database; the oldest evidence may be incomplete`);
+      }
+      deferredClocks.set(clock, earliest);
+      if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Automatic work tracking waiting for the database");
+      if (!deferralNotified) {
+        deferralNotified = true;
+        warn(ctx, `${projectCommand}: the shared database is busy; recent activity is kept in memory and retried on the next event`);
+      }
+    };
+    /** Apply one deferred clock's earliest unrecorded observation, then persist. False means it is still deferred. */
+    const saveDeferred = (clock: AutomaticClock, ctx: Ctx): boolean => {
+      const observation = deferredClocks.get(clock);
+      try {
+        if (typeof observation === "number") { clock.touch(observation); deferredClocks.set(clock, null); }
+        clock.flush();
+        deferredClocks.delete(clock);
+        return true;
+      } catch (e) {
+        if (!isSqliteBusy(e)) { deferredClocks.delete(clock); disableAutomatic(ctx, e); return false; }
+        if (observation === undefined) deferredClocks.set(clock, null);
+        return false;
+      }
+    };
+    /** One blocking attempt per event: stop at the first clock the database still refuses, never spin. */
+    const retryDeferred = (ctx: Ctx): boolean => {
+      for (const clock of [...deferredClocks.keys()]) if (!saveDeferred(clock, ctx)) return false;
+      if (deferralNotified) {
+        deferralNotified = false;
+        if (ctx.mode === "tui" && workspace) ctx.ui.setStatus(statusKey, `Automatic work tracking on (${workspace.client})`);
+      }
+      return true;
     };
     const touchAutomatic = (ctx: Ctx, cwd = scopedCwd(ctx.cwd)) => {
       if (!cwd) return;
@@ -106,11 +149,20 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         close(ctx, "interrupted"); sessionId = activeSessionId; startAutomatic(ctx);
       }
       if (autoFailed || !autoClock || !workspace || !containsPath(workspace.root, cwd)) return;
-      try { autoClock.touch(now()); } catch (e) { disableAutomatic(ctx, e); }
+      const clock = autoClock, at = now();
+      if (deferredClocks.size && !retryDeferred(ctx)) {
+        if (!autoFailed) deferClock(clock, at, ctx);
+        return;
+      }
+      try { clock.touch(at); } catch (e) { if (isSqliteBusy(e)) deferClock(clock, at, ctx); else disableAutomatic(ctx, e); }
     };
     const flushAutomatic = (ctx: Ctx) => {
       if (!autoClock) return;
-      try { autoClock.flush(); } catch (e) { disableAutomatic(ctx, e); }
+      if (!saveDeferred(autoClock, ctx)) {
+        if (!autoFailed) deferClock(autoClock, null, ctx);
+        return;
+      }
+      retryDeferred(ctx);
     };
     const stopAutomatic = (ctx: Ctx) => {
       flushAutomatic(ctx); clearAutomatic();
@@ -183,7 +235,12 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     pi.on("ui_prompt_start", (_event, ctx) => { if (turn && scopedCwd(ctx.cwd) && promptDepth++ === 0) turn.pause(now()); });
     pi.on("ui_prompt_end", (_event, ctx) => { if (turn && scopedCwd(ctx.cwd) && promptDepth > 0 && --promptDepth === 0) turn.resume(now()); });
     pi.on("agent_settled", (_event, ctx) => { touchAutomatic(ctx); flushAutomatic(ctx); close(ctx, "settled"); });
-    pi.on("session_shutdown", (_event, ctx) => { close(ctx, "interrupted"); stopAutomatic(ctx); store?.close(); store = undefined; });
+    pi.on("session_shutdown", (_event, ctx) => {
+      close(ctx, "interrupted"); stopAutomatic(ctx);
+      if (deferredClocks.size) warn(ctx, `${projectCommand}: ${deferredClocks.size} unsaved work window(s) could not be written before shutdown; the database stayed busy`);
+      deferredClocks.clear();
+      store?.close(); store = undefined;
+    });
 
     pi.registerTool({
       name: `${command}_note`, label: "Record work evidence",

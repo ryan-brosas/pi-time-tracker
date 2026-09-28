@@ -7,6 +7,11 @@ export interface Workspace { root: string; client: string }
 export interface WorkWindow extends Workspace {
   id: string; sessionId: string; task: string; start: number; end: number; kind: "work" | "gap";
 }
+/** SQLite writer contention (SQLITE_BUSY, including its extended codes) is retryable; every other storage failure stays fatal. */
+export function isSqliteBusy(error: unknown): boolean {
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  return typeof errcode === "number" && (errcode & 0xff) === 5;
+}
 export function containsPath(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));

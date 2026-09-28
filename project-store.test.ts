@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, syml
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ProjectStore, containsPath, projectText, repositoryRoot, type WorkWindow } from "./project-store";
+import { ProjectStore, containsPath, isSqliteBusy, projectText, repositoryRoot, type WorkWindow } from "./project-store";
 
 const openStores = new Set<ProjectStore>();
 const roots: string[] = [];
@@ -14,6 +14,32 @@ afterAll(() => {
 const closeStore = (s: ProjectStore) => { s.close(); openStores.delete(s); };
 const tempDir = (prefix: string) => { const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root); return root; };
 const openStore = (path: string) => { const s = new ProjectStore(path); openStores.add(s); return s; };
+
+test("writer contention is retryable and unrelated storage failures are not", () => {
+  const root = tempDir("project-store-busy-");
+  const path = join(root, "tracker.sqlite");
+  const store = openStore(path); store.setClient(root, "Coral");
+  const holder = new DatabaseSync(path);
+  let blocked: DatabaseSync | undefined;
+  try {
+    holder.exec("BEGIN IMMEDIATE");
+    holder.prepare("INSERT INTO workspaces(root, client) VALUES ('/held', 'Coral')").run();
+    blocked = new DatabaseSync(path);
+    blocked.exec("PRAGMA busy_timeout = 25");
+    let captured: unknown;
+    try { blocked.prepare("INSERT INTO workspaces(root, client) VALUES ('/blocked', 'Coral')").run(); }
+    catch (error) { captured = error; }
+    expect(captured).toBeDefined();
+    expect(isSqliteBusy(captured)).toBe(true);
+    expect(store.windows(root)).toHaveLength(0);
+  } finally {
+    blocked?.close();
+    holder.exec("ROLLBACK"); holder.close();
+  }
+  expect(isSqliteBusy(new Error("database is locked"))).toBe(false);
+  expect(isSqliteBusy(new Error("disk I/O error"))).toBe(false);
+  expect(isSqliteBusy(undefined)).toBe(false);
+});
 
 test("persists rows across reopen, keeps the database private and upserts windows by end", () => {
   const root = tempDir("project-store-rows-");

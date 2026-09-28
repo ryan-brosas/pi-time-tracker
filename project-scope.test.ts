@@ -45,6 +45,40 @@ test("default root comes from the Pi context and stays isolated across reused fa
   } finally { rmSync(parent, { recursive: true, force: true }); }
 });
 
+test("sessions started in a repo subfolder share the repo receipts and report", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "pi-time-tracker-nested-"));
+  try {
+    const repo = join(parent, "repo"), nested = join(repo, "nested");
+    mkdirSync(join(repo, ".git"), { recursive: true }); mkdirSync(nested);
+    let now = Date.parse("2026-09-27T00:00:00Z");
+    const factory = createTimeTrackingExtension(undefined, { now: () => now, timezones: ["UTC"], databasePath: join(parent, "shared.sqlite") });
+    const a = host(factory, repo), b = host(factory, nested);
+    a.emit("session_start"); b.emit("session_start");
+    a.emit("agent_start"); b.emit("agent_start"); now += 60_000;
+    a.emit("agent_settled"); b.emit("agent_settled");
+    expect(readTurnRecords(join(repo, "exports", "pi-worktime.jsonl"))).toHaveLength(2);
+    expect(existsSync(join(nested, "exports"))).toBe(false);
+    await b.commands.get("work").handler("report", b.ctx);
+    expect(readFileSync(join(repo, "exports", "work-report.md"), "utf8").match(/ · turn /g)).toHaveLength(2);
+    const store = new ProjectStore(join(parent, "shared.sqlite"));
+    try { expect(store.windows().map(w => w.root)).toEqual([repo, repo]); }
+    finally { store.close(); }
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
+test("an explicitly configured subfolder stays scoped there inside a Git repo", () => {
+  const parent = mkdtempSync(join(tmpdir(), "pi-time-tracker-explicit-sub-"));
+  try {
+    const repo = join(parent, "repo"), nested = join(repo, "nested");
+    mkdirSync(join(repo, ".git"), { recursive: true }); mkdirSync(nested);
+    let now = 1_000;
+    const h = host(createTimeTrackingExtension(nested, { now: () => now, databasePath: join(parent, "shared.sqlite") }), nested);
+    h.emit("session_start"); h.emit("agent_start"); now += 1_000; h.emit("agent_settled"); h.emit("session_shutdown");
+    expect(readTurnRecords(join(nested, "exports", "pi-worktime.jsonl"))).toHaveLength(1);
+    expect(existsSync(join(repo, "exports"))).toBe(false);
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
 test("an explicit project adapter preserves scope, command aliases and timezones", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-time-tracker-adapter-"));
   try {

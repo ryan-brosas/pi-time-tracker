@@ -266,12 +266,67 @@ test("late session identity rebinds automatic windows and restores the stable se
   expect(h.listenerCount()).toBe(1);
 });
 
-test("store failure clears session metadata and listeners and retries on the next session", () => {
+test("a transient busy database keeps the clock and replays the unrecorded observation", () => {
+  const root = tempRoot("auto-ext-busy-");
+  const t = 1_000_000;
+  const h = harness(root, join(root, "db.sqlite"), "sess-1");
+  h.emit("session_start", t);
+  h.type("a", t + 1_000);
+  h.type("b", t + 2_000);
+  const busy = spyOn(ProjectStore.prototype, "save").mockImplementationOnce(() => {
+    const error = new Error("database is locked") as Error & { errcode: number };
+    error.errcode = 5;
+    throw error;
+  });
+  try { h.type("c", t + 2_000_000); } finally { busy.mockRestore(); }
+  expect(h.statuses.at(-1)).toContain("waiting");
+  expect(h.listenerCount()).toBe(1);
+  expect(h.notices.some(n => n.includes("disabled"))).toBe(false);
+  h.type("d", t + 2_001_000); // the next event retries and replays the unrecorded observation
+  h.emit("session_shutdown", t + 2_001_000);
+  const store = h.store();
+  const rows = store.windows(root).map(({ kind, start, end }) => ({ kind, start, end }));
+  store.close();
+  expect(rows).toEqual([
+    { kind: "work", start: t + 1_000, end: t + 2_000 },
+    { kind: "gap", start: t + 2_000, end: t + 2_000_000 },
+    { kind: "work", start: t + 2_000_000, end: t + 2_001_000 },
+  ]);
+  expect(h.notices.some(n => n.includes("busy"))).toBe(true);
+  expect(h.statuses.at(-1)).toContain("tracking on");
+});
+
+test("a busy database keeps the unsaved window across a task change", () => {
+  const root = tempRoot("auto-ext-busy-switch-");
+  const t = 1_000_000;
+  const h = harness(root, join(root, "db.sqlite"), "sess-1");
+  h.emit("session_start", t);
+  h.type("a", t + 1_000);
+  h.type("b", t + 2_000); // in memory only: the next checkpoint would persist it
+  const busy = spyOn(ProjectStore.prototype, "save").mockImplementationOnce(() => {
+    const error = new Error("database is locked") as Error & { errcode: number };
+    error.errcode = 5;
+    throw error;
+  });
+  try { h.command("project", "task invoices"); } finally { busy.mockRestore(); } // the handover flush is refused
+  expect(h.notices.some(n => n.includes("disabled"))).toBe(false);
+  h.type("c", t + 3_000); // the next event retries the retained clock before its own window
+  h.emit("session_shutdown", t + 3_000);
+  const store = h.store();
+  const rows = store.windows(root).map(({ kind, start, end, task }) => ({ kind, start, end, task }));
+  store.close();
+  expect(rows).toEqual([
+    { kind: "work", start: t + 1_000, end: t + 2_000, task: "unlabeled" },
+    { kind: "work", start: t + 3_000, end: t + 3_000, task: "invoices" },
+  ]);
+});
+
+test("a permanent store failure clears session metadata and listeners and retries on the next session", () => {
   const root = tempRoot("auto-ext-retry-");
   const h = harness(root, join(root, "db.sqlite"), "first");
   h.emit("session_start", 1_000_000);
   h.command("project", "set Coral"); h.command("project", "task invoices"); h.type("a", 1_001_000);
-  const fail = spyOn(ProjectStore.prototype, "save").mockImplementationOnce(() => { throw new Error("SQLITE_BUSY"); });
+  const fail = spyOn(ProjectStore.prototype, "save").mockImplementationOnce(() => { throw new Error("disk I/O error"); });
   try { h.type("b", 1_021_000); } finally { fail.mockRestore(); }
   expect(h.statuses.at(-1)).toContain("disabled"); expect(h.listenerCount()).toBe(0);
   h.command("project", "status");

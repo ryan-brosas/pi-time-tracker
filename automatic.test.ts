@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AutomaticClock, DEFAULT_IDLE_GAP_MS, isHumanInput } from "./automatic";
 import { ProjectStore, type Workspace } from "./project-store";
+import { reconcileIntervals } from "./native";
 
 const roots: string[] = [];
 const stores = new Set<ProjectStore>();
@@ -122,6 +123,18 @@ for (const change of ["client", "task"] as const) test(`long quiet gaps survive 
   expect(rows).toHaveLength(3);
   expect(rows[1]).toMatchObject({ kind: "gap", client: "Coral", task: "old task", start: 2_000, end: 20_000 });
   expect(rows[2]).toMatchObject({ kind: "work", client: change === "client" ? "Other" : "Coral", task: change === "task" ? "new task" : "old task", start: 20_000, end: 20_000 });
+});
+
+test("two live clocks for one session and root overlap raw rows while the union still counts once", () => {
+  const { store, ws } = fixture();
+  const a = new AutomaticClock(store, ws, "shared", "task", 900_000);
+  const b = new AutomaticClock(store, ws, "shared", "task", 900_000);
+  a.touch(1_000, true); b.touch(1_500, true); a.touch(2_000, true); b.touch(2_500, true);
+  const rows = store.windows(ws.root).filter(r => r.kind === "work");
+  expect(rows.map(r => [r.start, r.end])).toEqual([[1_000, 2_000], [1_500, 2_500]]);
+  expect(rows.reduce((sum, r) => sum + (r.end - r.start), 0)).toBe(2_000); // raw rows are additive and overlap
+  const [union] = reconcileIntervals([rows.map(r => ({ start: r.start, end: r.end }))]);
+  expect(union).toBe(1_500);
 });
 
 test("client or task changes open a fresh window and never reattribute recorded rows", () => {
