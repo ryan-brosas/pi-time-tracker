@@ -24,17 +24,19 @@ After [installing](#install) the extension, work is tracked automatically in the
 project where the extension is loaded — no start or stop command is needed:
 
 ```text
+/project set Coral   # optional: name this workspace's client once
 /project report      # daily draft for this workspace
 /project report all  # every workspace, from the shared database
 ```
 
 Activity in the workspace's folder opens an inferred work window for its
 client; quiet gaps up to a configurable limit join, and longer gaps stay
-excluded and Unknown. `/work` commands remain available as an explicit,
-user-attested session clock, and agent-turn receipts are still recorded
-separately. Drafts go to `exports/work-report.md` (or next to the shared
-database for `report all`); there is no web server, background service or
-external sync.
+excluded and **Unknown**. Before labeling, windows use the workspace folder's
+name as the client and `unlabeled` as the task. `/work start` and `/work stop`
+remain an explicit, user-attested session clock; agent-turn receipts are recorded
+separately. `/work report` includes all three measures. Workspace drafts go to
+`exports/work-report.md`; `report all` writes `automatic-work-report.md` next to
+the shared database. There is no web server, background service or external sync.
 
 ## Why pi-time-tracker?
 
@@ -51,7 +53,7 @@ inspectable receipts and reconciles them without rewriting the original records.
 | 🧾 | **Receipt auditing** | Surface missing evidence, duplicate receipts and conflicting summaries. |
 | 💾 | **Event-driven checkpoints** | Retain interval evidence when a final turn summary is missing. |
 | 📝 | **Work notes and session clock** | Record outcomes and explicit start/stop sessions separately. |
-| 🔒 | **Local records** | Keep work data in your project, with no external sync or automatic invoicing. |
+| 🔒 | **Local records** | Keep receipts in your project and windows in a local shared database; no external sync or automatic invoicing. |
 
 ## How it fits
 
@@ -80,8 +82,9 @@ interval union or receipt classification.
 
 ## Install
 
-You need a Pi 0.87.1-compatible host, Bun, native Bend and a Clang version
-compatible with that Bend release. Follow the [official Bend installation
+You need Node.js >=22.19.0 (matching Pi 0.87.1's engine floor), a
+Pi 0.87.1-compatible host, Bun, native Bend and a Clang version compatible
+with that Bend release. Follow the [official Bend installation
 instructions][bend]. The tracker never installs or upgrades your compiler.
 
 CI tests Linux x64 with Bun 1.4.0, Bend 2.0.31 and Clang 19. Bend 2.0.7 has also
@@ -101,13 +104,22 @@ Replace the path with your checkout location. Approve project trust yourself and
 use `/reload` at an idle boundary. Load the package only once: use its default
 entry point or a project-specific adapter, never both.
 
-To track every client workspace with one shared database, install globally
-instead — `pi install /absolute/path/to/pi-time-tracker` without `--local`.
-A `--local` install still tracks its own project, but automatic windows then
-stay limited to that project's root.
+For a single project, you can instead add
+`/absolute/path/to/pi-time-tracker/index.ts` to its `.pi/settings.json` extensions
+list.
 
-You can instead add `/absolute/path/to/pi-time-tracker/index.ts` to your project's
-`.pi/settings.json` extensions list.
+To track every client workspace with one shared database, install globally
+instead. When switching, run these from the previously configured project:
+
+```sh
+pi remove /absolute/path/to/pi-time-tracker --local
+pi install /absolute/path/to/pi-time-tracker
+```
+
+Remove any direct tracker entry or adapter from that project's extensions list
+as well; repeat local removal in other configured projects. Equivalent package
+declarations are deduplicated by Pi, but distinct adapters can still load the
+tracker twice. A `--local` install alone tracks only its project's root.
 
 ### Run from source
 
@@ -151,19 +163,20 @@ every turn. It makes no model calls of its own.
 ### Automatic tracking and `/project`
 
 Work is detected automatically. The folder or repo you opened Pi in maps to a
-client workspace; label it once and sessions — including resume and `/reload` —
-inherit it:
+client workspace; optionally label it once and sessions — including resume and
+`/reload` — inherit it. Without a label, the workspace folder's name is used:
 
 ```text
 /project set Coral        # label this workspace's client, once
 /project task invoices    # optional task for this Pi session
 /project status           # client, task, policy and database path
 /project report           # daily draft for this workspace
+/project report 2025-01-15 # daily draft from this date onward
 /project report all       # every workspace, from the shared database
 ```
 
 - Work windows open on first observed activity — typed input, submitted
-  prompts, agent turns — and stop advancing when activity stops.
+  prompts, agent turns and tool traffic — and stop advancing when activity stops.
 - Quiet gaps up to `idleGapMs` (default 15 minutes) join into work; longer
   gaps are recorded separately and stay **Unknown**, never silently counted.
 - An open session does not bill wall-clock lifetime: time advances only on
@@ -176,6 +189,9 @@ inherit it:
   clock stay separate measures; never add the same time twice. Nothing
   outside Pi is observed, and hours are drafts until reviewed — no automatic
   invoicing.
+- A storage failure disables automatic tracking for the current session and
+  reports an error; the next session start retries. Missing activity is not
+  reconstructed.
 
 ### Project configuration
 
@@ -198,21 +214,28 @@ export default createTimeTrackingExtension("/path/to/project", {
 
 [TimeTrackingOptions](extension.ts) also exposes command names, storage paths,
 the clock and native settings, plus `databasePath`, `idleGapMs` and
-`projectCommand` for automatic tracking. Factory options take precedence over
-native executable/cache environment defaults.
+`projectCommand` for automatic tracking. An explicit `databasePath` must be
+absolute. `projectCommand` is a nonempty token using letters, digits, `_` or `-`,
+without a leading slash, and must not collide with another tracker command.
+Factory options take precedence over executable, cache and database environment
+defaults.
 
+- `WORKTIME_DB_PATH` moves the shared SQLite database; `databasePath` wins.
+  Without either override, it lives under `XDG_STATE_HOME` (default
+  `~/.local/state`) at `pi-time-tracker/tracker.sqlite`.
 - `BEND_EXECUTABLE` selects the compiler; the default is `bend` on `PATH`.
 - `WORKTIME_BEND_BINARY` selects a trusted prebuilt engine instead of compiling.
 - `XDG_CACHE_HOME` sets the cache base, defaulting to `~/.cache`. The engine lives
   under `pi-worktime-native`.
 
-The corresponding factory options are `bendExecutable`, `nativeExecutable` and
-`cacheDir`. Rebuild prebuilt engines after changing Bend policy. Compiler calls
-disable Bend telemetry and automatic updates.
+The corresponding factory options are `databasePath`, `bendExecutable`,
+`nativeExecutable` and `cacheDir`. Rebuild prebuilt engines after changing Bend
+policy. Compiler calls disable Bend telemetry and automatic updates.
 
 ### Local storage and privacy
 
-Records belong to the tracked project, not the extension's checkout:
+Receipt, session, note and workspace-report files belong to the tracked project,
+not the extension's checkout:
 
 | File under `exports/` | Contents |
 | --- | --- |
@@ -222,15 +245,19 @@ Records belong to the tracked project, not the extension's checkout:
 | `work-activities.jsonl` | Timestamped outcome notes. |
 | `work-report.md` | Generated working-hours draft. |
 
-Automatic windows and workspace mappings live in one shared private SQLite
-database, defaulting to `~/.local/state/pi-time-tracker/tracker.sqlite`. Set
-`WORKTIME_DB_PATH` or the `databasePath` option to move it (the option wins).
-It uses WAL, a busy timeout and full synchronous writes so several Pi processes
-can track concurrently; a symlinked database path is refused. `/project report
-all` writes its draft next to the database.
+Automatic windows, workspace mappings and session tasks live in one shared
+SQLite database, created with mode `0600`. Its default is
+`~/.local/state/pi-time-tracker/tracker.sqlite`; see the environment overrides
+above. It uses WAL, a five-second busy timeout and full synchronous writes so
+several Pi processes can track concurrently; a symlinked database path is refused.
+`/project report all` writes `automatic-work-report.md` next to the database,
+independently of `reportFile`. It includes automatic windows across workspaces,
+not repository-local agent receipts or manual session clocks.
 
-Exclude these files from Git in every project where you enable tracking. They
-are written with mode `0600`. Automatic capture does not persist prompts, tool
+Exclude the `exports/` files (also written with mode `0600`) from Git in every
+tracked project. If the database is inside a repository, also ignore its exact
+path, its `-wal`, `-shm` and `-journal` sidecars, and the sibling
+`automatic-work-report.md`. Automatic capture does not persist prompts, tool
 arguments or file contents. Keep credentials, customer data and private messages
 out of free-text labels and notes. The `work_note` validator rejects common
 credential and email patterns and query-bearing URLs; it is not complete
@@ -246,9 +273,11 @@ evidence are disclosed in the report.
 - Session-clock hours, agent-turn activity and automatic work windows are separate
   views. Do not add the same time twice.
 - Automatic windows are inferred elapsed time around observed activity. Excluded
-  long gaps stay Unknown; review them before invoicing.
-- Blocking prompt waits are excluded. Silent gaps are capped at five minutes;
-  that cap is an estimate, not proof of uninterrupted work.
+  gaps longer than `idleGapMs` (default 15 minutes) stay **Unknown**; review them
+  before invoicing.
+- Agent-turn receipts exclude blocking prompt waits and cap silent gaps within
+  a turn at five minutes. That cap is an estimate, not proof of uninterrupted
+  work; it is separate from the automatic-window join limit.
 - Missing coverage and open session ends stay **Unknown**. Work outside Pi and
   uncaptured time need separate evidence or confirmation.
 - Labels are heuristic drafts. Per-label totals can overlap across concurrent
@@ -265,12 +294,45 @@ power-loss guarantees. Review the report before using it in a timesheet or invoi
 
 - [Package entry point and factory](index.ts)
 - [Project options and Pi integration](extension.ts)
+- [Shared project store](project-store.ts)
+- [Automatic-window derivation](automatic.ts)
 - [Native interval engine](engine.bend) and [receipt audit](audit.bend)
 - [Native transport and cache](native.ts)
 - [Draft label registry](labels.ts)
 - [CI workflow](.github/workflows/ci.yml)
 - [Security and private vulnerability reporting](SECURITY.md)
 - [Report a bug][issues]
+
+### Programmatic API
+
+[index.ts](index.ts) intentionally exports these APIs for adapters and other
+local consumers, in addition to its default Pi extension activation:
+
+- `createTimeTrackingExtension` and `TimeTrackingOptions`: configure a tracker.
+- `parseReportDay`: validate an optional report date, returning `null` when absent.
+- `ProjectStore`, `Workspace` and `WorkWindow`: persist workspace clients, session
+  tasks and timestamped work/gap evidence in SQLite.
+- `defaultDatabasePath`: resolve the environment-aware database default.
+- `repositoryRoot`: find the canonical repository root, or the input directory
+  when no repository is found. `containsPath` checks lexical path containment;
+  it does not resolve symlinks.
+- `projectText`: validate and trim a nonempty, single-line client/task name of
+  at most 120 characters.
+- `AutomaticClock`, `DEFAULT_IDLE_GAP_MS` and `isHumanInput`: derive windows from
+  observed activity and classify terminal input without storing its contents.
+- `buildAutomaticReport` and `AutomaticReportOptions`: render automatic-window
+  evidence as `{ text, summary }`, using the native Bend engine.
+
+Each `ProjectStore` owns its own SQLite connection. Separate processes or
+consumers may open the same database under WAL; writes serialize and may throw
+if the five-second busy timeout expires. Callers own error handling and must
+call `close()` on their own store, preferably in `finally`; do not close another
+consumer's connection. An `AutomaticClock` borrows its store: call `flush()`
+before closing it. Keep one clock owner per logical session/task and unique
+window IDs rather than racing writers for the same evidence. Do not replace the
+database, change its journal mode or remove live WAL/SHM files while any consumer
+is open. SQLite owns WAL checkpointing; `flush()` persists clock evidence, not
+an explicit WAL checkpoint.
 
 ### Development and contributions
 
@@ -317,8 +379,9 @@ this tracker's behavior; the reference is not proof that this code works.
 [varve][varve-repo] (Apache-2.0, Rust) inspired the local-first storage and
 recovery posture of the automatic-window database: explicit checkpoint and
 recovery boundaries, and refusing to write through ambiguous paths. Varve
-itself was not adopted — `Database::open` takes an exclusive directory lock
-(`src/engine.rs`), which fits one Rust process but not several concurrent Pi
+itself was not adopted — `Database::open` takes an exclusive directory lock on
+`<root>/LOCK` ([`src/engine.rs`][varve-lock]), which fits one Rust process but
+not several concurrent Pi
 processes sharing one store, so the embedded database here is SQLite in WAL
 mode. No Varve code was copied.
 
@@ -342,4 +405,5 @@ prevent accidental npm publication.
 [issues]: https://github.com/ryan-brosas/pi-time-tracker/issues
 [prior-verifier]: https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/index.ts#L966-L1015
 [prior-tests]: https://github.com/inloopstudio-team/pi-ledger/blob/29cd1b0edd99727bac2cbb9b2003bebbb457c593/extensions/pi-ledger/__tests__/notarization.test.ts#L234-L281
-[varve-repo]: https://github.com/monotykamary/varve
+[varve-repo]: https://github.com/monotykamary/varve/tree/4ce9bcc45d83bb7477f42248a1e64c7b1cc0b754
+[varve-lock]: https://github.com/monotykamary/varve/blob/4ce9bcc45d83bb7477f42248a1e64c7b1cc0b754/src/engine.rs#L1106-L1113

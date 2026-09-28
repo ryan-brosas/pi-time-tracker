@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTimeTrackingExtension } from "./extension";
 import { readTurnRecords } from "./ledger";
+import { ProjectStore } from "./project-store";
 
 function host(factory: ReturnType<typeof createTimeTrackingExtension>, root: string) {
   const events = new Map<string, any>(), commands = new Map<string, any>();
@@ -28,6 +29,13 @@ test("default root comes from the Pi context and stays isolated across reused fa
       const rows = readTurnRecords(join(root, "exports", "pi-worktime.jsonl"));
       expect(rows).toHaveLength(1); expect(rows[0].scope).toBe("work-pi-turn"); expect(rows[0].observedMs).toBe(60000);
     }
+    const sharedPath = join(parent, "shared.sqlite");
+    expect(existsSync(sharedPath)).toBe(true);
+    const shared = new ProjectStore(sharedPath);
+    try {
+      expect([...new Set(shared.windows().map(w => w.root))].sort()).toEqual([aRoot, bRoot].sort());
+      expect(shared.windows().every(w => w.client === "a" || w.client === "b")).toBe(true);
+    } finally { shared.close(); }
     mkdirSync(join(aRoot, "sub")); a.ctx.cwd = join(aRoot, "sub"); a.emit("agent_start"); now += 60000; a.emit("agent_settled");
     expect(readTurnRecords(join(aRoot, "exports", "pi-worktime.jsonl"))).toHaveLength(2);
     a.ctx.cwd = bRoot; a.emit("agent_start"); now += 60000; a.emit("agent_settled");
@@ -43,6 +51,7 @@ test("an explicit project adapter preserves scope, command aliases and timezones
     let now = 1000;
     const h = host(createTimeTrackingExtension(root, { scopePrefix: "client", legacyCommandNames: ["client-time"], timezones: ["UTC"], now: () => now, databasePath: join(root, "db.sqlite") }), root);
     h.emit("session_start"); h.emit("agent_start"); now += 2000; h.emit("agent_settled");
+    expect(existsSync(join(root, "db.sqlite"))).toBe(true);
     expect(h.commands.has("client-time")).toBe(true);
     expect(readTurnRecords(join(root, "exports", "pi-worktime.jsonl"))[0].scope).toBe("client-pi-turn");
     await h.commands.get("work").handler("report", h.ctx);

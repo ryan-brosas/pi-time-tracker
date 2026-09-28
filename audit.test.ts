@@ -1,13 +1,17 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTimeTrackingExtension } from "./extension";
 import { labelFor } from "./labels";
 import { appendJsonl, readChunks, readTurnRecords } from "./ledger";
 
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
 function setup() {
   const root = mkdtempSync(join(tmpdir(), "pi-time-tracker-audit-"));
+  roots.push(root);
   let clock = Date.parse("2026-09-26T15:59:00Z");
   const events = new Map<string, any>(), commands = new Map<string, any>(), tools = new Map<string, any>();
   const notices: string[] = [];
@@ -25,7 +29,8 @@ test("generic browser use does not invent anti-bot work; Reddit has its own labe
 
 test("subdirectory work is captured, attributed, checkpointed and survives a missing final summary", () => {
   const h = setup(); mkdirSync(join(h.root, "web")); h.ctx.cwd = join(h.root, "web");
-  h.emit("session_start"); h.emit("before_agent_start", { prompt: "Reddit opportunity research" }); h.emit("agent_start");
+  h.emit("session_start"); expect(existsSync(h.logs.databasePath)).toBe(true); // the configured store, not the default one
+  h.emit("before_agent_start", { prompt: "Reddit opportunity research" }); h.emit("agent_start");
   h.at("2026-09-26T16:01:00Z"); h.emit("message_update");
   const chunks = readChunks(h.logs.chunksLog);
   expect(chunks.length).toBeGreaterThan(0);

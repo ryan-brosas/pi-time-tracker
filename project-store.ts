@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -11,8 +11,17 @@ export function containsPath(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
+// Keep historical rows addressable by their saved absolute root after deletion.
+function canonicalRoot(path: string): string {
+  try { return realpathSync(path); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return resolve(path);
+    throw error;
+  }
+}
 export function repositoryRoot(cwd: string): string {
-  const canonical = realpathSync(cwd);
+  const canonical = canonicalRoot(cwd);
   for (let dir = canonical; ; dir = dirname(dir)) {
     if (existsSync(join(dir, ".git"))) return dir;
     if (dirname(dir) === dir) return canonical;
@@ -23,7 +32,7 @@ export function defaultDatabasePath(): string {
 }
 export function projectText(text: string): string {
   const value = text.trim();
-  if (!value || value.length > 120 || /[\x00-\x1f\x7f]/.test(value)) throw new Error("Use a nonempty, single-line name (up to 120 characters)");
+  if (!value || value.length > 120 || /[\x00-\x1f\x7f\u0085\u2028\u2029]/.test(value)) throw new Error("Use a nonempty, single-line name (up to 120 characters)");
   return value;
 }
 
@@ -34,8 +43,17 @@ export class ProjectStore {
   constructor(readonly path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error("Tracker database must not be a symlink");
-    const fd = openSync(path, "a", 0o600); closeSync(fd); chmodSync(path, 0o600);
-    this.db = new DatabaseSync(path);
+    const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile()) throw new Error("Tracker database must be a regular file");
+      fchmodSync(fd, 0o600);
+      const current = lstatSync(path);
+      if (current.isSymbolicLink() || current.dev !== opened.dev || current.ino !== opened.ino) throw new Error("Tracker database path changed while opening");
+      // SQLite reopens this pathname: these checks cannot secure attacker-writable parents.
+      // Its WAL/SHM files inherit the main database's private mode.
+      this.db = new DatabaseSync(path);
+    } finally { closeSync(fd); }
     try {
       this.db.exec("PRAGMA busy_timeout = 5000");
       const version = this.db.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -54,39 +72,39 @@ export class ProjectStore {
     } catch (error) { this.db.close(); throw error; }
   }
   resolveWorkspace(cwd: string): Workspace {
-    const path = realpathSync(cwd);
+    const path = canonicalRoot(cwd);
     const candidates = this.db.prepare("SELECT root, client FROM workspaces WHERE explicit = 1").all() as unknown as Workspace[];
     const mapped = candidates.filter(w => containsPath(w.root, path)).sort((a, b) => b.root.length - a.root.length)[0];
     return mapped ?? this.workspace(repositoryRoot(path));
   }
   workspace(root: string): Workspace {
-    root = realpathSync(root);
+    root = canonicalRoot(root);
     this.db.prepare("INSERT OR IGNORE INTO workspaces(root, client) VALUES (?, ?)").run(root, basename(root) || root);
     return this.db.prepare("SELECT root, client FROM workspaces WHERE root = ?").get(root) as unknown as Workspace;
   }
   setClient(root: string, client: string): Workspace {
-    root = realpathSync(root); client = projectText(client);
+    root = canonicalRoot(root); client = projectText(client);
     this.db.prepare("INSERT INTO workspaces(root, client, explicit) VALUES (?, ?, 1) ON CONFLICT(root) DO UPDATE SET client = excluded.client, explicit = 1").run(root, client);
     return { root, client };
   }
   task(root: string, sessionId: string): string {
-    root = realpathSync(root);
+    root = canonicalRoot(root);
     return (this.db.prepare("SELECT task FROM tasks WHERE root = ? AND sessionId = ?").get(root, sessionId) as { task: string } | undefined)?.task ?? "unlabeled";
   }
   setTask(root: string, sessionId: string, task: string): void {
-    root = realpathSync(root);
+    root = canonicalRoot(root);
     this.db.prepare("INSERT INTO tasks VALUES (?, ?, ?) ON CONFLICT(root, sessionId) DO UPDATE SET task = excluded.task").run(root, sessionId, projectText(task));
   }
   save(window: WorkWindow): void {
     if (![window.start, window.end].every(n => Number.isSafeInteger(n) && n >= 0 && n <= 8.64e15) || window.end < window.start) throw new Error("Invalid work-window timestamps");
     this.db.prepare(`INSERT INTO windows VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET end = MAX(windows.end, excluded.end)`).run(window.id, window.root, window.client, window.sessionId, window.task, window.start, window.end, window.kind);
+      ON CONFLICT(id) DO UPDATE SET end = MAX(windows.end, excluded.end)`).run(window.id, canonicalRoot(window.root), window.client, window.sessionId, window.task, window.start, window.end, window.kind);
   }
   latest(root: string, sessionId: string): WorkWindow | undefined {
-    return this.db.prepare("SELECT * FROM windows WHERE root = ? AND sessionId = ? AND kind = 'work' ORDER BY end DESC, rowid DESC LIMIT 1").get(root, sessionId) as unknown as WorkWindow | undefined;
+    return this.db.prepare("SELECT * FROM windows WHERE root = ? AND sessionId = ? AND kind = 'work' ORDER BY end DESC, rowid DESC LIMIT 1").get(canonicalRoot(root), sessionId) as unknown as WorkWindow | undefined;
   }
   windows(root?: string): WorkWindow[] {
-    return (root === undefined ? this.db.prepare("SELECT * FROM windows ORDER BY start, id").all() : this.db.prepare("SELECT * FROM windows WHERE root = ? ORDER BY start, id").all(root)) as unknown as WorkWindow[];
+    return (root === undefined ? this.db.prepare("SELECT * FROM windows ORDER BY start, id").all() : this.db.prepare("SELECT * FROM windows WHERE root = ? ORDER BY start, id").all(canonicalRoot(root))) as unknown as WorkWindow[];
   }
   close(): void { if (!this.closed) { this.closed = true; this.db.close(); } }
 }

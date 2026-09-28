@@ -1,7 +1,7 @@
-import type { WorkWindow } from "./project-store.ts";
 import { readActivities, type ActivityNote } from "./activities.ts";
 import { inspectJsonl, localDayKey, readChunks, readTurnRecords, readWorkSessions, splitIntervalByLocalDay, type Interval, type TimeRecord } from "./ledger.ts";
 import { auditTurnReceipts, reconcileIntervals, type NativeOptions } from "./native.ts";
+import type { WorkWindow } from "./project-store.ts";
 
 export const minutes = (ms: number) => `${(ms / 60000).toFixed(1)} min`;
 export const hours = (ms: number) => `${(ms / 3600000).toFixed(2)} h`;
@@ -19,7 +19,7 @@ interface Detail { group: number; label: string; start: number; end: number; tur
 interface Day {
   agent: number; session: number; labels: Map<string, number>; details: Map<string, Detail>;
   legacy: TimeRecord[]; missing: TimeRecord[]; conflicts: Set<string>; notes: ActivityNote[]; open: number[];
-  auto: number; autoSplit: Map<string, number>; gaps: Array<{ start: number; end: number }>;
+  auto: number; autoSplit: Map<string, number>; gaps: Interval[];
 }
 
 /** Share calendar partitioning/filtering; interval unions still belong to native Bend. */
@@ -89,7 +89,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
         if (sub === undefined) { sub = group(); d.autoSplit.set(key, sub); }
         groups[sub].push(interval);
       });
-      else eachPart(w.start, w.end, (d, interval) => { d.gaps.push(interval); });
+      else if (w.kind === "gap") eachPart(w.start, w.end, (d, interval) => { d.gaps.push(interval); });
     }
     for (const t of legacy) { const key = localDayKey(Date.parse(t.startedAt), tz); if (sinceDay === null || key >= sinceDay) day(key).legacy.push(t); }
     for (const t of missing) { const key = localDayKey(Date.parse(t.startedAt), tz); if (sinceDay === null || key >= sinceDay) day(key).missing.push(t); }
@@ -99,7 +99,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
   const totals = reconcileIntervals(groups, options);
   const mismatched = [...turns.values()].filter(t => audits.get(t.id)?.status === "mismatch");
   const oldBotLabels = [...turns.values()].filter(t => t.label === "antibot" && t.labelSource === "tools").length;
-  const lines: string[] = ["# Work-time report (draft)", "", `Generated ${new Date(options.now).toISOString()} · scope ${options.root}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", "Reconciliation engine: native Bend (worktime-v1; worktime-audit-v1).", ""];
+  const lines: string[] = ["# Work-time report (draft)", "", `Generated ${new Date(options.now).toISOString()} · scope ${safe(options.root)}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", "Reconciliation engine: native Bend (worktime-v1; worktime-audit-v1).", ""];
   const summaries: string[] = [];
   for (const [tz, days] of zones) {
     const time = (at: number) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(at));
@@ -122,7 +122,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
         lines.push("", "Automatic work windows (inferred elapsed time):");
         if (groups[d.auto].length) lines.push(`- Inferred work union: ${hours(totals[d.auto])} (concurrent sessions counted once).`);
         for (const [key, id] of [...d.autoSplit].sort(([a], [b]) => a.localeCompare(b))) lines.push(`- ${safe(key)}: ${hours(totals[id])} (overlaps possible; not additive).`);
-        for (const g of d.gaps) lines.push(`- Excluded quiet gap ${time(g.start)} to ${time(g.end)} · ${hours(g.end - g.start)} · Unknown; review before invoicing.`);
+        for (const g of [...d.gaps].sort((a, b) => a.start - b.start || a.end - b.end)) lines.push(`- Excluded quiet gap ${time(g.start)} to ${time(g.end)} · ${hours(g.end - g.start)} · Unknown; review before invoicing.`);
       }
       if (d.legacy.length) lines.push(`- Legacy aggregate records: ${d.legacy.length}; raw ${hours(d.legacy.reduce((sum, t) => sum + t.observedMs, 0))}. Not a full-day total, not allocated or added to interval totals.`);
       for (const t of d.missing) lines.push(`- Interval evidence missing for turn ${safe(t.id)}; duration Unallocated. Summary retained for reconciliation.`);
@@ -134,7 +134,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
       lines.push("");
     }
     lines.push(`- Labels (tracked, draft): ${[...labelTotals].sort(([a], [b]) => a.localeCompare(b)).map(([label, ms]) => `${safe(label)} ${hours(ms)}`).join(", ") || "none yet"}.`);
-    const summary = `${tz}: user-attested ${hasSession ? hours(sessionTotal) : "Unknown"}; tracked working hours ${hasAgent ? hours(agentTotal) : "Unknown"}${automatic ? `; inferred elapsed work ${hasAuto ? hours(autoTotal) : "Unknown (no interval evidence)"}` : ""}`;
+    const summary = `${tz}: user-attested ${hasSession ? hours(sessionTotal) : "Unknown"}; tracked working hours ${hasAgent ? hours(agentTotal) : "Unknown"}${automatic ? `; inferred elapsed work ${hasAuto ? hours(autoTotal) : "Unknown"}` : ""}`;
     summaries.push(summary); lines.push(`- Total shown: ${summary}.`, "");
   }
   const malformed = [options.turnsLog, options.chunksLog, options.sessionsLog, options.activitiesLog].reduce((n, p) => n + inspectJsonl(p).malformedLines, 0);
@@ -166,7 +166,7 @@ export function buildAutomaticReport(options: AutomaticReportOptions): { text: s
   const gaps = options.windows.filter(w => w.kind === "gap");
   const groups: Interval[][] = [];
   const group = () => { groups.push([]); return groups.length - 1; };
-  interface AutoDay { union: number; split: Map<string, number>; roots: Map<string, number>; gaps: Array<{ start: number; end: number }> }
+  interface AutoDay { union: number; split: Map<string, number>; roots: Map<string, number>; gaps: Array<Interval & { root: string }> }
   const zones = new Map<string, Map<string, AutoDay>>();
   for (const tz of timezones) {
     const days = new Map<string, AutoDay>(); zones.set(tz, days);
@@ -186,10 +186,10 @@ export function buildAutomaticReport(options: AutomaticReportOptions): { text: s
       if (rootGroup === undefined) { rootGroup = group(); d.roots.set(w.root, rootGroup); }
       groups[rootGroup].push(interval);
     });
-    for (const w of gaps) eachPart(w.start, w.end, (d, interval) => { d.gaps.push(interval); });
+    for (const w of gaps) eachPart(w.start, w.end, (d, interval) => { d.gaps.push({ ...interval, root: w.root }); });
   }
   const totals = reconcileIntervals(groups, options);
-  const lines: string[] = ["# Automatic work-window report (draft)", "", `Generated ${new Date(options.now).toISOString()} · database ${options.scope}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", "Inferred elapsed work windows across workspaces, reconciled by native Bend (worktime-v1).", ""];
+  const lines: string[] = ["# Automatic work-window report (draft)", "", `Generated ${new Date(options.now).toISOString()} · database ${safe(options.scope)}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", "Inferred elapsed work windows across workspaces, reconciled by native Bend (worktime-v1).", ""];
   const summaries: string[] = [];
   for (const [tz, days] of zones) {
     const time = (at: number) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(at));
@@ -201,7 +201,7 @@ export function buildAutomaticReport(options: AutomaticReportOptions): { text: s
       lines.push(`### ${key}`, "", `- Inferred elapsed work (union): ${measured ? hours(totals[d.union]) : "Unknown (no interval evidence)"}.`);
       for (const [root, id] of [...d.roots].sort(([a], [b]) => a.localeCompare(b))) lines.push(`- Workspace ${safe(root)}: ${hours(totals[id])} (overlaps possible across concurrent sessions; not additive).`);
       for (const [label, id] of [...d.split].sort(([a], [b]) => a.localeCompare(b))) lines.push(`- ${safe(label)}: ${hours(totals[id])} (client/task subtotal; overlaps possible; not additive).`);
-      for (const g of d.gaps) lines.push(`- Excluded quiet gap ${time(g.start)} to ${time(g.end)} · ${hours(g.end - g.start)} · Unknown; review before invoicing.`);
+      for (const g of [...d.gaps].sort((a, b) => a.start - b.start || a.end - b.end || a.root.localeCompare(b.root))) lines.push(`- Excluded quiet gap ${time(g.start)} to ${time(g.end)} · ${hours(g.end - g.start)} · workspace ${safe(g.root)} · Unknown; review before invoicing.`);
       lines.push("");
     }
     const summary = `${tz}: inferred elapsed work ${hasAny ? hours(total) : "Unknown (no interval evidence)"}`;

@@ -11,3 +11,5 @@
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite-journal
+automatic-work-report.md

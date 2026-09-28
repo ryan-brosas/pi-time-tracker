@@ -27,12 +27,15 @@ export class AutomaticClock {
   touch(at: number, checkpoint = false): void {
     if (!Number.isSafeInteger(at) || at < 0 || at > 8.64e15) throw new Error("Invalid activity timestamp");
     const previous = this.current ?? this.last;
-    if (previous && at < previous.end) return; // A backward clock cannot manufacture time.
+    if (previous && at < previous.end) {
+      if (checkpoint) this.flush(); // Preserve already-observed forward evidence.
+      return; // A backward clock cannot manufacture time.
+    }
     const same = previous?.client === this.workspace.client && previous.task === this.task;
     const gap = previous ? at - previous.end : 0;
     if (!this.current || !same || gap > this.idleGapMs) {
       this.flush();
-      if (previous && same && gap > this.idleGapMs) {
+      if (previous && gap > this.idleGapMs) {
         this.store.save({ ...previous, id: randomUUID(), start: previous.end, end: at, kind: "gap" });
       }
       this.current = { ...this.workspace, id: randomUUID(), sessionId: this.sessionId, task: this.task, start: previous && same && gap <= this.idleGapMs ? previous.end : at, end: at, kind: "work" };

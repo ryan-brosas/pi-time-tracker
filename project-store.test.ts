@@ -1,14 +1,19 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ProjectStore, containsPath, repositoryRoot } from "./project-store";
+import { ProjectStore, containsPath, projectText, repositoryRoot, type WorkWindow } from "./project-store";
 
-const openStores: ProjectStore[] = [];
-afterAll(() => { for (const s of openStores.splice(0)) s.close(); });
-const tempDir = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
-const openStore = (path: string) => { const s = new ProjectStore(path); openStores.push(s); return s; };
+const openStores = new Set<ProjectStore>();
+const roots: string[] = [];
+afterAll(() => {
+  try { for (const s of openStores) s.close(); }
+  finally { for (const root of roots) rmSync(root, { recursive: true, force: true }); }
+});
+const closeStore = (s: ProjectStore) => { s.close(); openStores.delete(s); };
+const tempDir = (prefix: string) => { const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root); return root; };
+const openStore = (path: string) => { const s = new ProjectStore(path); openStores.add(s); return s; };
 
 test("persists rows across reopen, keeps the database private and upserts windows by end", () => {
   const root = tempDir("project-store-rows-");
@@ -18,14 +23,15 @@ test("persists rows across reopen, keeps the database private and upserts window
   s1.setTask(root, "sess-1", "invoices");
   s1.save({ id: "w1", root, client: "Coral", sessionId: "sess-1", task: "invoices", start: 1000, end: 2000, kind: "work" });
   s1.save({ id: "w1", root, client: "Coral", sessionId: "sess-1", task: "invoices", start: 1000, end: 3000, kind: "work" });
-  s1.close();
+  closeStore(s1);
   const s2 = openStore(path);
   expect(s2.task(root, "sess-1")).toBe("invoices");
   expect(s2.task(root, "sess-2")).toBe("unlabeled");
   const rows = s2.windows(root);
   expect(rows).toHaveLength(1);
   expect(rows[0].end).toBe(3000);
-  expect(statSync(path).mode & 0o777).toBe(0o600);
+  s2.setTask(root, "sess-3", "x");
+  for (const suffix of ["", "-wal", "-shm"]) expect(statSync(path + suffix).mode & 0o777).toBe(0o600);
 });
 
 test("two independent connections share rows through WAL", () => {
@@ -36,13 +42,16 @@ test("two independent connections share rows through WAL", () => {
   b.save({ id: "w-b", root, client: "Coral", sessionId: "s-b", task: "unlabeled", start: 1, end: 2, kind: "work" });
   expect(b.resolveWorkspace(root).client).toBe("Coral");
   expect(a.windows(root)).toHaveLength(1);
+  const raw = new DatabaseSync(path);
+  try { expect(raw.prepare("PRAGMA journal_mode").get()?.journal_mode).toBe("wal"); }
+  finally { raw.close(); }
 });
 
 test("rejects a database written by a newer schema", () => {
   const root = tempDir("project-store-ver-");
   const path = join(root, "tracker.sqlite");
-  const s = openStore(path); s.close();
-  const raw = new DatabaseSync(path); raw.exec("PRAGMA user_version = 2"); raw.close();
+  const s = openStore(path); closeStore(s);
+  const raw = new DatabaseSync(path); raw.exec("PRAGMA user_version = 2147483647"); raw.close();
   expect(() => new ProjectStore(path)).toThrow("newer version");
 });
 
@@ -76,12 +85,74 @@ test("repositoryRoot walks up to .git and containsPath respects boundaries", () 
   expect(containsPath(repo, join(parent, "repo-other"))).toBe(false);
 });
 
+test("window reads and writes use canonical workspace roots", () => {
+  const parent = tempDir("project-store-canonical-");
+  const root = join(parent, "workspace"); mkdirSync(root);
+  const alias = join(parent, "alias"); symlinkSync(root, alias);
+  const s = openStore(join(parent, "tracker.sqlite"));
+  s.setClient(alias, "Coral"); s.setTask(alias, "sess", "task");
+  s.save({ id: "w", root: alias, client: "Coral", sessionId: "sess", task: "task", start: 1, end: 2, kind: "work" });
+  for (const spelling of [root, alias, `${root}/../workspace`]) {
+    expect(s.workspace(spelling)).toEqual({ root, client: "Coral" });
+    expect(s.task(spelling, "sess")).toBe("task");
+    expect(s.latest(spelling, "sess")).toMatchObject({ root, id: "w" });
+    expect(s.windows(spelling)).toHaveLength(1);
+    expect(s.windows(spelling)[0].root).toBe(root);
+  }
+});
+
+test("deleted workspace roots retain historical reads and pending writes", () => {
+  const parent = tempDir("project-store-deleted-");
+  const root = join(parent, "workspace"); mkdirSync(root);
+  const s = openStore(join(parent, "tracker.sqlite"));
+  s.setClient(root, "Coral"); s.setTask(root, "sess", "task");
+  const window: WorkWindow = { id: "w", root, client: "Coral", sessionId: "sess", task: "task", start: 1, end: 2, kind: "work" };
+  s.save(window);
+  rmSync(root, { recursive: true });
+  expect(s.windows(root)).toEqual([window]);
+  expect(s.latest(root, "sess")).toEqual(window);
+  expect(s.workspace(root)).toEqual({ root, client: "Coral" });
+  expect(s.resolveWorkspace(root)).toEqual({ root, client: "Coral" });
+  expect(s.task(root, "sess")).toBe("task");
+  expect(repositoryRoot(root)).toBe(root);
+  s.setClient(root, "Other"); s.setTask(root, "sess", "new task");
+  s.save({ ...window, end: 3 });
+  expect(s.windows(root)).toEqual([{ ...window, end: 3 }]);
+  closeStore(s);
+  const reopened = openStore(join(parent, "tracker.sqlite"));
+  expect(reopened.windows(root)).toEqual([{ ...window, end: 3 }]);
+  expect(reopened.task(root, "sess")).toBe("new task");
+});
+
+test("refuses database symlinks without touching their target and tightens existing files", () => {
+  const root = tempDir("project-store-private-");
+  const target = join(root, "target"); writeFileSync(target, "untouched"); chmodSync(target, 0o644);
+  const link = join(root, "tracker.sqlite"); symlinkSync(target, link);
+  expect(() => new ProjectStore(link)).toThrow("symlink");
+  expect(readFileSync(target, "utf8")).toBe("untouched");
+  expect(statSync(target).mode & 0o777).toBe(0o644);
+  const path = join(root, "existing.sqlite"); writeFileSync(path, ""); chmodSync(path, 0o644);
+  openStore(path).setClient(root, "Coral");
+  for (const suffix of ["", "-wal", "-shm"]) expect(statSync(path + suffix).mode & 0o777).toBe(0o600);
+});
+
 test("validates names, timestamps and window rows", () => {
   const root = tempDir("project-store-valid-");
   const s = openStore(join(root, "tracker.sqlite"));
-  expect(() => s.setClient(root, "")).toThrow("nonempty");
-  expect(() => s.setClient(root, "two\nlines")).toThrow("single-line");
+  s.setClient(root, "Valid client");
+  s.setTask(root, "sess", "Valid task");
+  for (const invalid of ["", "two\nlines", "two\u0085lines", "two\u2028lines", "two\u2029lines", "x".repeat(121)]) {
+    expect(() => s.setClient(root, invalid)).toThrow("single-line");
+    expect(() => s.setTask(root, "sess", invalid)).toThrow("single-line");
+    expect(s.workspace(root).client).toBe("Valid client");
+    expect(s.task(root, "sess")).toBe("Valid task");
+  }
+  expect(projectText("  Unicode café  ")).toBe("Unicode café");
   expect(() => s.save({ id: "x", root, client: "C", sessionId: "s", task: "t", start: 2000, end: 1000, kind: "work" })).toThrow("timestamps");
   expect(() => s.save({ id: "x", root, client: "C", sessionId: "s", task: "t", start: -1, end: 1, kind: "work" })).toThrow("timestamps");
   expect(s.windows(root)).toHaveLength(0);
+  const valid: WorkWindow = { id: "x", root, client: "C", sessionId: "s", task: "t", start: 1, end: 2, kind: "work" };
+  s.save(valid);
+  expect(() => s.save({ ...valid, end: 0 })).toThrow("timestamps");
+  expect(s.windows(root)).toEqual([valid]);
 });

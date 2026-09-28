@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createTimeTrackingExtension, type TimeTrackingOptions } from "./extension";
+import { ProjectStore } from "./project-store";
 import { readChunks, readTurnRecords, readWorkSessions } from "./ledger";
 import { reconcileIntervals } from "./native";
 
@@ -58,6 +59,7 @@ test("records turns, deduplicates concurrent tabs by interval union, and support
   expect(readChunks(logs.chunksLog).reduce((s, c) => s + c.ms, 0)).toBe(120_000);
 
   // concurrent tabs overlap; only the interval union is meaningful
+  emit(b, "session_start", 2_000_000); // the second host joins the same shared store
   emit(a, "agent_start", 2_000_000); emit(b, "agent_start", 2_060_000);
   emit(a, "message_update", 2_300_000); emit(b, "tool_execution_end", 2_200_000);
   emit(a, "agent_settled", 2_400_000); emit(b, "agent_settled", 2_500_000);
@@ -66,6 +68,13 @@ test("records turns, deduplicates concurrent tabs by interval union, and support
   expect(unionMs).toBe(620_000);
   expect(rawMs).toBe(960_000);
 
+  // both host extensions write their automatic windows into the one configured shared store
+  expect(existsSync(options.databasePath!)).toBe(true);
+  const shared = new ProjectStore(options.databasePath!);
+  try {
+    expect(shared.windows(root).map(w => `${w.kind}:${w.start}-${w.end}`)).toEqual(["work:1000000-2400000", "work:2060000-2500000"]);
+  } finally { shared.close(); }
+
   // waiting on a blocking prompt is excluded
   emit(a, "agent_start", 4_000_000);
   emit(a, "message_update", 4_060_000);
@@ -73,6 +82,15 @@ test("records turns, deduplicates concurrent tabs by interval union, and support
   emit(a, "ui_prompt_end", 9_000_000);
   emit(a, "agent_settled", 9_050_000);
   expect(readTurnRecords(logs.turnsLog).at(-1)!.observedMs).toBe(150_000);
+
+  // quiet gaps stay stored as excluded evidence and never count as inferred work
+  const settled = new ProjectStore(options.databasePath!);
+  try {
+    const windows = settled.windows(root);
+    const workWindows = windows.filter(w => w.kind === "work");
+    expect(windows.filter(w => w.kind === "gap").map(g => `${g.start}-${g.end}`)).toEqual(["2400000-4000000", "4060000-9050000"]);
+    expect(reconcileIntervals([workWindows.map(w => ({ start: w.start, end: w.end }))])[0]).toBe(1_560_000);
+  } finally { settled.close(); }
 
   // user-attested sessions and commands
   const work = a.commands.get("work")!;
@@ -97,11 +115,14 @@ test("records turns, deduplicates concurrent tabs by interval union, and support
   expect(reportText).toContain("wall-clock union");
   expect(reportText).toContain("legacy pre-chunk turns");
   expect(reportText).toContain("Labels (tracked, draft)");
+  expect(reportText).toContain("Inferred work union: 0.43 h");
+  expect(reportText).toContain("Excluded quiet gap");
   expect(notices.at(-1)).toContain("Full draft");
 
   // commands outside the workspace root stay inert
   work.handler("start stray", { ...ctx, cwd: tmpdir() });
   expect(readWorkSessions(logs.sessionsLog)).toHaveLength(1);
+  emit(a, "session_shutdown", clock); emit(b, "session_shutdown", clock);
 });
 
 test("labels each turn from the request text, with tool names as fallback", () => {
@@ -111,7 +132,10 @@ test("labels each turn from the request text, with tool names as fallback", () =
     sessionsLog: join(root, "s.jsonl"), reportFile: join(root, "report.md"),
   };
   let clock = 1_000_000;
-  const options: TimeTrackingOptions = { ...logs, scopePrefix: "test", databasePath: join(root, "auto.sqlite"), timezones: ["Asia/Manila"], now: () => clock };
+  const options: TimeTrackingOptions = {
+    ...logs, scopePrefix: "test", databasePath: join(root, "auto.sqlite"),
+    timezones: ["Asia/Manila"], now: () => clock,
+  };
   const a = harness(root, options);
   const notices: string[] = [];
   const ctx = { cwd: root, mode: "tui", ui: { notify: (message: string) => notices.push(message), setStatus: () => {} } };
@@ -121,6 +145,7 @@ test("labels each turn from the request text, with tool names as fallback", () =
   };
 
   emit("session_start", 1_000_000);
+  expect(existsSync(join(root, "auto.sqlite"))).toBe(true); // the configured store, never the default one
   emit("before_agent_start", 1_000_000, { prompt: "can we improve this tracker thing so we do not do this again" });
   emit("agent_start", 1_000_000);
   emit("message_update", 1_060_000);

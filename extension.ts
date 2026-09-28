@@ -1,7 +1,7 @@
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { SESSION_SCOPE_SUFFIX, TURN_SCOPE_SUFFIX, Turn, appendJsonl, readChunks, readTurnRecords, readWorkSessions, writeFilePrivate, type ActivityIdentity, type TurnChunk } from "./ledger.ts";
 import { labelFor, resolveSessionLabel } from "./labels.ts";
 import { appendActivity, workNoteParameters, type WorkNoteInput } from "./activities.ts";
@@ -18,10 +18,10 @@ export interface TimeTrackingOptions extends NativeOptions {
 type Ctx = { cwd: string; mode: string; sessionManager?: { getSessionId: () => string | null }; ui: { notify: (message: string, type?: "info" | "warning" | "error") => void; setStatus: (key: string, text: string | undefined) => void; onTerminalInput?: (handler: (data: string) => { consume?: boolean; data?: string } | undefined) => () => void } };
 
 /** Shared day-argument validation for /work report and /project report. */
-export function parseReportDay(args: string): string | null {
+export function parseReportDay(args: string, usage = "[YYYY-MM-DD]"): string | null {
   const day = String(args ?? "").trim();
   if (!day) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(day)) || new Date(day).toISOString().slice(0, 10) !== day) throw new Error("Expected report [YYYY-MM-DD]");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(day)) || new Date(day).toISOString().slice(0, 10) !== day) throw new Error(`Expected report ${usage}`);
   return day;
 }
 
@@ -29,12 +29,14 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
   const scopePrefix = options.scopePrefix ?? "work", command = options.commandPrefix ?? "work";
   const projectCommand = options.projectCommand ?? "project";
   const idleGapMs = options.idleGapMs ?? DEFAULT_IDLE_GAP_MS;
+  if (!/^[A-Za-z0-9_-]+$/.test(projectCommand)) throw new Error("projectCommand must be a nonempty command name without whitespace or slashes");
   if (projectCommand === command || (options.legacyCommandNames ?? []).includes(projectCommand)) throw new Error(`/${projectCommand} collides with an existing command name`);
   if (!Number.isSafeInteger(idleGapMs) || idleGapMs <= 0) throw new Error("idleGapMs must be a positive integer of milliseconds");
   const timezones = options.timezones ?? [Intl.DateTimeFormat().resolvedOptions().timeZone];
   const now = options.now ?? Date.now, turnScope = scopePrefix + TURN_SCOPE_SUFFIX, sessionScope = scopePrefix + SESSION_SCOPE_SUFFIX;
   const statusKey = command + "-time";
   const databasePath = options.databasePath ?? defaultDatabasePath();
+  if (!isAbsolute(databasePath)) throw new Error("databasePath must be an absolute path");
   return function (pi: ExtensionAPI) {
     // Bind to the host context, never the package checkout or process.cwd().
     // Keep this state per factory invocation so independent SDK sessions stay isolated.
@@ -82,15 +84,28 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     };
     const observe = (ctx: Ctx) => { if (turn) { if (inScope(ctx.cwd)) turn.event(now()); else close(ctx, "interrupted"); } };
     const getStore = (ctx: Ctx): ProjectStore | undefined => {
-      if (store) return store;
       if (autoFailed) return undefined;
+      if (store) return store;
       try { store = new ProjectStore(databasePath); return store; }
-      catch (e) { autoFailed = true; warn(ctx, `${projectCommand}: automatic work tracking disabled — ${e instanceof Error ? e.message : String(e)}`); return undefined; }
+      catch (e) { disableAutomatic(ctx, e); return undefined; }
     };
     const autoInScope = (ctx: Ctx) => { if (!workspace) return false; try { return containsPath(workspace.root, realpathSync(ctx.cwd)); } catch { return false; } };
-    const disableAutomatic = (ctx: Ctx, e: unknown) => { autoFailed = true; autoClock = undefined; warn(ctx, `${projectCommand}: automatic work tracking disabled — ${e instanceof Error ? e.message : String(e)}`); };
+    const clearAutomatic = () => {
+      autoClock = undefined; workspace = undefined; task = "unlabeled"; liveCtx = undefined;
+      if (unsubscribeInput) { try { unsubscribeInput(); } catch { /* a vanished UI subscription is not evidence */ } unsubscribeInput = undefined; }
+    };
+    const disableAutomatic = (ctx: Ctx, e: unknown) => {
+      autoFailed = true; clearAutomatic();
+      if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Automatic work tracking disabled (error); retry on next session");
+      warn(ctx, `${projectCommand}: automatic work tracking disabled — ${e instanceof Error ? e.message : String(e)}`);
+    };
     const touchAutomatic = (ctx: Ctx) => {
-      if (autoFailed || !autoClock || !inScope(ctx.cwd) || !autoInScope(ctx)) return;
+      if (!inScope(ctx.cwd)) return;
+      const activeSessionId = ctx.sessionManager?.getSessionId();
+      if (activeSessionId && activeSessionId !== sessionId) {
+        close(ctx, "interrupted"); sessionId = activeSessionId; startAutomatic(ctx);
+      }
+      if (autoFailed || !autoClock || !autoInScope(ctx)) return;
       try { autoClock.touch(now()); } catch (e) { disableAutomatic(ctx, e); }
     };
     const flushAutomatic = (ctx: Ctx) => {
@@ -98,11 +113,11 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       try { autoClock.flush(); } catch (e) { disableAutomatic(ctx, e); }
     };
     const stopAutomatic = (ctx: Ctx) => {
-      flushAutomatic(ctx); autoClock = undefined;
-      if (unsubscribeInput) { try { unsubscribeInput(); } catch { /* a vanished UI subscription is not evidence */ } unsubscribeInput = undefined; }
+      flushAutomatic(ctx); clearAutomatic();
     };
-    const startAutomatic = (ctx: Ctx) => {
+    const startAutomatic = (ctx: Ctx, retry = false) => {
       stopAutomatic(ctx);
+      if (retry) autoFailed = false;
       liveCtx = ctx;
       if (autoFailed || !inScope(ctx.cwd)) return;
       const s = getStore(ctx);
@@ -117,8 +132,9 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     };
     const automaticEvidence = (ctx: Ctx): { windows: WorkWindow[]; idleGapMs: number } | undefined => {
       const s = getStore(ctx);
-      if (!s || !workspace) return undefined;
-      return { windows: s.windows(workspace.root), idleGapMs };
+      if (!s) return undefined;
+      const reportWorkspace = workspace ?? s.resolveWorkspace(ctx.cwd);
+      return { windows: s.windows(reportWorkspace.root), idleGapMs };
     };
     const renderWorkReport = (day: string | null, ctx: Ctx) => {
       turn?.checkpoint();
@@ -130,9 +146,8 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     };
     pi.on("session_start", (_event, ctx) => {
       close(ctx, "interrupted"); sessionId = ctx.sessionManager?.getSessionId() ?? randomUUID(); requestLabel = undefined;
-      const scoped = inScope(ctx.cwd);
-      if (ctx.mode === "tui" && scoped) ctx.ui.setStatus(statusKey, `Working hours tracked automatically; /${projectCommand} report drafts them`);
-      startAutomatic(ctx);
+      if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, undefined);
+      startAutomatic(ctx, true);
     });
     // A switch can be vetoed; only checkpoint here. Confirmed teardown emits session_shutdown.
     pi.on("session_before_switch", (_event, ctx) => { turn?.checkpoint(); flushAutomatic(ctx); });
@@ -147,7 +162,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       if (!inScope(ctx.cwd)) return;
       touchAutomatic(ctx);
       if (turn) turn.event(now());
-      else { turnTools = new Set(); promptDepth = 0; sessionId = ctx.sessionManager?.getSessionId() ?? sessionId; turn = new Turn(turnScope, sink, now()); }
+      else { turnTools = new Set(); promptDepth = 0; turn = new Turn(turnScope, sink, now()); }
       if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Pi: tracking this turn");
     });
     pi.on("input", (_event, ctx) => { touchAutomatic(ctx); });
@@ -218,8 +233,9 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       },
     });
     const mustGetStore = (ctx: Ctx): ProjectStore | undefined => {
+      const alreadyFailed = autoFailed;
       const s = getStore(ctx);
-      if (!s) ctx.ui.notify(`/${projectCommand}: automatic work tracking is disabled or unavailable.`, "error");
+      if (!s && alreadyFailed) ctx.ui.notify(`/${projectCommand}: automatic work tracking is disabled or unavailable.`, "error");
       return s;
     };
     const projectSubcommands: Record<string, (args: string, ctx: Ctx) => void> = {
@@ -231,19 +247,18 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         const s = mustGetStore(ctx); if (!s) return;
         const wsRoot = workspace?.root ?? root;
         if (!wsRoot) { ctx.ui.notify(`/${projectCommand}: open a session in the workspace first.`, "warning"); return; }
-        try { workspace = s.setClient(wsRoot, args); }
-        catch (e) { ctx.ui.notify(`/${projectCommand} set failed: ${e instanceof Error ? e.message : String(e)}`, "error"); return; }
+        const assigned = s.setClient(wsRoot, args);
         startAutomatic(ctx);
-        ctx.ui.notify(`Workspace ${workspace.root} labeled "${workspace.client}". Sessions in it inherit this client automatically.`, "info");
+        ctx.ui.notify(`Workspace ${assigned.root} labeled "${assigned.client}". Sessions in it inherit this client automatically.`, "info");
       },
       task: (args, ctx) => {
-        const s = mustGetStore(ctx); if (!s) return;
         if (!args.trim()) { ctx.ui.notify(`Session task: ${task}. Set with /${projectCommand} task <name>; use "clear" to reset to unlabeled.`, "info"); return; }
+        const s = mustGetStore(ctx); if (!s) return;
         const wsRoot = workspace?.root ?? root;
         if (!wsRoot) { ctx.ui.notify(`/${projectCommand}: open a session in the workspace first.`, "warning"); return; }
         try {
-          task = args.trim() === "clear" ? "unlabeled" : projectText(args);
-          s.setTask(wsRoot, sessionId, task);
+          const nextTask = args.trim() === "clear" ? "unlabeled" : projectText(args);
+          s.setTask(wsRoot, sessionId, nextTask);
         } catch (e) { ctx.ui.notify(`/${projectCommand} task failed: ${e instanceof Error ? e.message : String(e)}`, "error"); return; }
         startAutomatic(ctx);
         ctx.ui.notify(`Session task: ${task} (remembered for session ${sessionId.slice(0, 8)}; restored across /reload and resume).`, "info");
@@ -253,12 +268,12 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
           turn?.checkpoint(); flushAutomatic(ctx);
           const s = mustGetStore(ctx); if (!s) return;
           const result = buildAutomaticReport({ ...options, windows: s.windows(), timezones, now: now(), sinceDay: null, idleGapMs, scope: databasePath });
-          const file = join(dirname(databasePath), "work-report.md");
+          const file = join(dirname(databasePath), "automatic-work-report.md");
           writeFilePrivate(file, result.text);
           ctx.ui.notify(`${result.summary}. Full draft: ${file}. Repository-local agent and manual receipts are separate measures and are not included.`, "info");
           return;
         }
-        renderWorkReport(parseReportDay(args), ctx);
+        renderWorkReport(parseReportDay(args, "[YYYY-MM-DD|all]"), ctx);
       },
     };
     pi.registerCommand(projectCommand, {

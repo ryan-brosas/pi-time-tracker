@@ -5,10 +5,11 @@ import { join, resolve } from "node:path";
 import { loadExtensions } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 
 test("package manifest loads through Pi/Jiti and registers its public integration points", async () => {
-  const project = mkdtempSync(join(tmpdir(), "pi-time-tracker-loader-"));
+  // Read and assert the manifest before creating anything the finally must clean up.
   const manifest = JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8"));
   expect(manifest.name).toBe("pi-time-tracker");
   const paths = manifest.pi.extensions.map((p: string) => resolve(import.meta.dir, p));
+  const project = mkdtempSync(join(tmpdir(), "pi-time-tracker-loader-"));
   const dbPath = join(project, "tracker.sqlite");
   const previousDb = process.env.WORKTIME_DB_PATH;
   process.env.WORKTIME_DB_PATH = dbPath;
