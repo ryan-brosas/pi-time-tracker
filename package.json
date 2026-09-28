@@ -4,6 +4,7 @@
   "description": "Private working-hours receipts for Pi, with native Bend reconciliation and auditing.",
   "private": true,
   "license": "UNLICENSED",
+  "files": ["*.ts", "!*.test.ts", "*.bend"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "repository": { "type": "git", "url": "git+https://github.com/ryan-brosas/pi-time-tracker.git" },
@@ -11,7 +12,7 @@
   "homepage": "https://github.com/ryan-brosas/pi-time-tracker#readme",
   "exports": { ".": "./index.ts" },
   "pi": { "extensions": ["./index.ts"] },
-  "scripts": { "test": "bun test --timeout 90000 .", "check": "tsc --noEmit" },
+  "scripts": { "test": "bun test --timeout 90000 .", "check": "tsc --noEmit", "pack:check": "bun scripts/check-package.mjs" },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*", "typebox": "*" },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1",

@@ -100,9 +100,16 @@ Prepare a checkout using [Run from source](#run-from-source), then run this from
 pi install /absolute/path/to/pi-time-tracker --local
 ```
 
-Replace the path with your checkout location. Approve project trust yourself and
-use `/reload` at an idle boundary. Load the package only once: use its default
-entry point or a project-specific adapter, never both.
+Replace the path with your checkout location. Alternatively, without cloning,
+install the Git-hosted Pi package from the workspace you want to track:
+
+```sh
+pi install git:github.com/ryan-brosas/pi-time-tracker --local
+```
+
+For a reproducible install, append `@<commit-sha>` to the Git source. Approve
+project trust yourself and use `/reload` at an idle boundary. Load the package
+only once: use its default entry point or a project-specific adapter, never both.
 
 For a single project, you can instead add
 `/absolute/path/to/pi-time-tracker/index.ts` to its `.pi/settings.json` extensions
@@ -117,9 +124,12 @@ pi install /absolute/path/to/pi-time-tracker
 ```
 
 Remove any direct tracker entry or adapter from that project's extensions list
-as well; repeat local removal in other configured projects. Equivalent package
-declarations are deduplicated by Pi, but distinct adapters can still load the
-tracker twice. A `--local` install alone tracks only its project's root.
+as well; repeat local removal in other configured projects. Use
+`pi install git:github.com/ryan-brosas/pi-time-tracker` instead if you want a
+global Git install; remove the old source first rather than loading both.
+Equivalent package declarations are deduplicated by Pi, but distinct adapters
+can still load the tracker twice. A `--local` install alone tracks only its
+project's root.
 
 ### Run from source
 
@@ -130,9 +140,12 @@ bun install --frozen-lockfile --ignore-scripts
 BEND_NO_TELEMETRY=1 bend --help
 bun run check
 bun run test
+bun run pack:check
 ```
 
-There is no separate JavaScript build step. The first data-bearing report or
+`pack:check` verifies that the Pi manifest, every shipped runtime import and
+both Bend sources fit inside the package whitelist, and that tests and GitHub
+configuration stay out of the tarball. There is no separate JavaScript build step. The first data-bearing report or
 reconciliation command compiles the native Bend engine if it is not cached.
 
 ## Usage
@@ -188,6 +201,13 @@ client workspace; optionally label it once and sessions — including resume and
   renames never rewrite recorded rows.
 - Concurrent sessions in one workspace overlap: reports count the interval
   union once, using the same native Bend reconciliation as agent receipts.
+- Keep one Pi process per saved session. Resuming one session file in two
+  processes at once records overlapping raw window rows for that session;
+  reports still count the union once, but review those rows before invoicing.
+- A busy shared database no longer stops capture: the clock keeps the latest
+  activity in memory, says so in the status line, and retries on the next
+  event, report or session handover. Permanent storage failures still disable
+  automatic tracking until the next session.
 - Inferred elapsed work, agent-turn receipts and the manual `/work` session
   clock stay separate measures; never add the same time twice. Nothing
   outside Pi is observed, and hours are drafts until reviewed — no automatic
@@ -238,7 +258,11 @@ policy. Compiler calls disable Bend telemetry and automatic updates.
 ### Local storage and privacy
 
 Receipt, session, note and workspace-report files belong to the tracked project,
-not the extension's checkout:
+not the extension's checkout. By default, sessions started inside a Git repository
+share its root `exports/` directory; without Git, the starting folder is used.
+An explicitly configured adapter root still takes precedence. Existing receipts in
+subfolder `exports/` directories are not moved or merged automatically; review
+them before relying on a repo-root report:
 
 | File under `exports/` | Contents |
 | --- | --- |
@@ -339,7 +363,7 @@ an explicit WAL checkpoint.
 
 ### Development and contributions
 
-Run `bun run check` and `bun run test` before proposing a change. The suite covers
+Run `bun run check`, `bun run test` and `bun run pack:check` before proposing a change. The suite covers
 interval properties, checkpoints, waits, project isolation, midnight/DST
 boundaries, privacy, receipt replay/conflicts, malformed transport, imported-module
 cache invalidation and real Pi registration. Its timeout allows cold compilation.
@@ -389,9 +413,9 @@ processes sharing one store, so the embedded database here is SQLite in WAL
 mode. No Varve code was copied.
 
 > [!WARNING]
-> This is an early project with no published npm release. Working-hours reports
-> are reviewable drafts, not a confirmed full-day timesheet or an automated
-> billing decision.
+> This is an early project with no published npm release. Install it as a Pi
+> package from Git for now. Working-hours reports are reviewable drafts, not a
+> confirmed full-day timesheet or an automated billing decision.
 
 ## License
 

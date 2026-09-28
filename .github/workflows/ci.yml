@@ -40,3 +40,5 @@ jobs:
         run: bun run check
       - name: Test native Bend and Pi integration
         run: bun run test
+      - name: Validate Pi package payload
+        run: bun run pack:check
