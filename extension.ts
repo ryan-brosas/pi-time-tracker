@@ -51,12 +51,13 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       reportFile = options.reportFile ?? join(exportsDir, "work-report.md");
     };
     if (configuredRoot !== undefined) bindRoot(resolve(configuredRoot));
-    const inScope = (cwd: string) => {
+    /** Canonical cwd when it is inside the root, else null. Callers resolve this once per event. */
+    const scopedCwd = (cwd: string): string | null => {
       try {
         const canonicalCwd = realpathSync(cwd);
         if (!root) bindRoot(canonicalCwd);
-        return containsPath(realpathSync(root), canonicalCwd);
-      } catch { return false; }
+        return containsPath(realpathSync(root), canonicalCwd) ? canonicalCwd : null;
+      } catch { return null; }
     };
     let turn: Turn | undefined, chunkWriteFailed = false, promptDepth = 0;
     let requestLabel: ReturnType<typeof labelFor>, turnTools = new Set<string>();
@@ -72,7 +73,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     const close = (ctx: Ctx, outcome: "settled" | "interrupted") => {
       if (!turn) return;
       const current = turn; turn = undefined;
-      const record = outcome === "settled" && inScope(ctx.cwd) ? current.settle(now()) : current.interrupt(now());
+      const record = outcome === "settled" && scopedCwd(ctx.cwd) ? current.settle(now()) : current.interrupt(now());
       if (record) {
         Object.assign(record, identity());
         try { appendJsonl(turnsLog, record); }
@@ -82,14 +83,13 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       if (chunkWriteFailed) warn(ctx, `${scopePrefix} time: some activity intervals could not be saved; report coverage is incomplete`);
       chunkWriteFailed = false; promptDepth = 0; requestLabel = undefined; turnTools.clear();
     };
-    const observe = (ctx: Ctx) => { if (turn) { if (inScope(ctx.cwd)) turn.event(now()); else close(ctx, "interrupted"); } };
+    const observe = (ctx: Ctx, cwd = scopedCwd(ctx.cwd)) => { if (turn) { if (cwd) turn.event(now()); else close(ctx, "interrupted"); } };
     const getStore = (ctx: Ctx): ProjectStore | undefined => {
       if (autoFailed) return undefined;
       if (store) return store;
       try { store = new ProjectStore(databasePath); return store; }
       catch (e) { disableAutomatic(ctx, e); return undefined; }
     };
-    const autoInScope = (ctx: Ctx) => { if (!workspace) return false; try { return containsPath(workspace.root, realpathSync(ctx.cwd)); } catch { return false; } };
     const clearAutomatic = () => {
       autoClock = undefined; workspace = undefined; task = "unlabeled"; liveCtx = undefined;
       if (unsubscribeInput) { try { unsubscribeInput(); } catch { /* a vanished UI subscription is not evidence */ } unsubscribeInput = undefined; }
@@ -99,13 +99,13 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Automatic work tracking disabled (error); retry on next session");
       warn(ctx, `${projectCommand}: automatic work tracking disabled — ${e instanceof Error ? e.message : String(e)}`);
     };
-    const touchAutomatic = (ctx: Ctx) => {
-      if (!inScope(ctx.cwd)) return;
+    const touchAutomatic = (ctx: Ctx, cwd = scopedCwd(ctx.cwd)) => {
+      if (!cwd) return;
       const activeSessionId = ctx.sessionManager?.getSessionId();
       if (activeSessionId && activeSessionId !== sessionId) {
         close(ctx, "interrupted"); sessionId = activeSessionId; startAutomatic(ctx);
       }
-      if (autoFailed || !autoClock || !autoInScope(ctx)) return;
+      if (autoFailed || !autoClock || !workspace || !containsPath(workspace.root, cwd)) return;
       try { autoClock.touch(now()); } catch (e) { disableAutomatic(ctx, e); }
     };
     const flushAutomatic = (ctx: Ctx) => {
@@ -119,7 +119,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       stopAutomatic(ctx);
       if (retry) autoFailed = false;
       liveCtx = ctx;
-      if (autoFailed || !inScope(ctx.cwd)) return;
+      if (autoFailed || !scopedCwd(ctx.cwd)) return;
       const s = getStore(ctx);
       if (!s) return;
       try {
@@ -152,33 +152,36 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     // A switch can be vetoed; only checkpoint here. Confirmed teardown emits session_shutdown.
     pi.on("session_before_switch", (_event, ctx) => { turn?.checkpoint(); flushAutomatic(ctx); });
     pi.on("before_agent_start", (event, ctx) => {
-      if (!inScope(ctx.cwd)) return;
-      touchAutomatic(ctx);
+      const cwd = scopedCwd(ctx.cwd);
+      if (!cwd) return;
+      touchAutomatic(ctx, cwd);
       // Classify immediately; never retain or persist the prompt text.
       if (turn) { turn.event(now()); turn.checkpoint(); }
       requestLabel = labelFor(event.prompt);
     });
     pi.on("agent_start", (_event, ctx) => {
-      if (!inScope(ctx.cwd)) return;
-      touchAutomatic(ctx);
+      const cwd = scopedCwd(ctx.cwd);
+      if (!cwd) return;
+      touchAutomatic(ctx, cwd);
       if (turn) turn.event(now());
       else { turnTools = new Set(); promptDepth = 0; turn = new Turn(turnScope, sink, now()); }
       if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Pi: tracking this turn");
     });
     pi.on("input", (_event, ctx) => { touchAutomatic(ctx); });
-    pi.on("message_update", (_event, ctx) => { observe(ctx); touchAutomatic(ctx); });
+    pi.on("message_update", (_event, ctx) => { const cwd = scopedCwd(ctx.cwd); observe(ctx, cwd); touchAutomatic(ctx, cwd); });
     pi.on("tool_execution_start", (event, ctx) => {
-      observe(ctx);
-      touchAutomatic(ctx);
-      if (inScope(ctx.cwd) && event.toolName) {
+      const cwd = scopedCwd(ctx.cwd);
+      observe(ctx, cwd);
+      touchAutomatic(ctx, cwd);
+      if (cwd && event.toolName) {
         const next = requestLabel ?? labelFor(undefined, [...turnTools, event.toolName]);
         if (next?.label !== identity().label) turn?.checkpoint();
         turnTools.add(event.toolName);
       }
     });
-    pi.on("tool_execution_end", (_event, ctx) => { observe(ctx); touchAutomatic(ctx); });
-    pi.on("ui_prompt_start", (_event, ctx) => { if (turn && inScope(ctx.cwd) && promptDepth++ === 0) turn.pause(now()); });
-    pi.on("ui_prompt_end", (_event, ctx) => { if (turn && inScope(ctx.cwd) && promptDepth > 0 && --promptDepth === 0) turn.resume(now()); });
+    pi.on("tool_execution_end", (_event, ctx) => { const cwd = scopedCwd(ctx.cwd); observe(ctx, cwd); touchAutomatic(ctx, cwd); });
+    pi.on("ui_prompt_start", (_event, ctx) => { if (turn && scopedCwd(ctx.cwd) && promptDepth++ === 0) turn.pause(now()); });
+    pi.on("ui_prompt_end", (_event, ctx) => { if (turn && scopedCwd(ctx.cwd) && promptDepth > 0 && --promptDepth === 0) turn.resume(now()); });
     pi.on("agent_settled", (_event, ctx) => { touchAutomatic(ctx); flushAutomatic(ctx); close(ctx, "settled"); });
     pi.on("session_shutdown", (_event, ctx) => { close(ctx, "interrupted"); stopAutomatic(ctx); store?.close(); store = undefined; });
 
@@ -190,7 +193,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       executionMode: "sequential",
       parameters: workNoteParameters,
       execute: async (callId, args, _signal, _update, ctx) => {
-        if (!inScope(ctx.cwd)) throw new Error("Work notes are limited to this workspace");
+        if (!scopedCwd(ctx.cwd)) throw new Error("Work notes are limited to this workspace");
         const context = { callId, scope: `${scopePrefix}-activity`, at: now(), sessionId: ctx.sessionManager?.getSessionId() ?? sessionId, ...(turn ? { turnId: turn.id } : {}) };
         const note = await withFileMutationQueue(activitiesLog, async () => appendActivity(activitiesLog, args as WorkNoteInput, context));
         return { content: [{ type: "text", text: `Recorded ${note.label}: ${note.summary} (${note.status}); duration Unallocated. No external sync.` }], details: { noteId: note.id } };
@@ -226,7 +229,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     pi.registerCommand(command, {
       description: `Working hours: /${command} start|stop|status|time|report`,
       handler: async (args: string, ctx: Ctx) => {
-        if (!inScope(ctx.cwd)) return;
+        if (!scopedCwd(ctx.cwd)) return;
         const [sub = "status", ...rest] = String(args ?? "").trim().split(/\s+/).filter(Boolean);
         if (!subcommands[sub]) { ctx.ui.notify(`/${command}: unknown "${sub}". Use start|stop|status|time|report.`, "warning"); return; }
         try { subcommands[sub](rest.join(" "), ctx); } catch (e) { ctx.ui.notify(`/${command} ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error"); }
@@ -279,12 +282,12 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     pi.registerCommand(projectCommand, {
       description: `Automatic work tracking: /${projectCommand} status|set <client>|task <name>|report [YYYY-MM-DD|all]`,
       handler: async (args: string, ctx: Ctx) => {
-        if (!inScope(ctx.cwd)) return;
+        if (!scopedCwd(ctx.cwd)) return;
         const [sub = "status", ...rest] = String(args ?? "").trim().split(/\s+/).filter(Boolean);
         if (!projectSubcommands[sub]) { ctx.ui.notify(`/${projectCommand}: unknown "${sub}". Use status|set|task|report.`, "warning"); return; }
         try { projectSubcommands[sub](rest.join(" "), ctx); } catch (e) { ctx.ui.notify(`/${projectCommand} ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error"); }
       },
     });
-    for (const name of options.legacyCommandNames ?? []) pi.registerCommand(name, { description: `Alias for /${command} time`, handler: async (_args: string, ctx: Ctx) => { if (inScope(ctx.cwd)) { try { subcommands.time("", ctx); } catch (e) { ctx.ui.notify(String(e), "error"); } } } });
+    for (const name of options.legacyCommandNames ?? []) pi.registerCommand(name, { description: `Alias for /${command} time`, handler: async (_args: string, ctx: Ctx) => { if (scopedCwd(ctx.cwd)) { try { subcommands.time("", ctx); } catch (e) { ctx.ui.notify(String(e), "error"); } } } });
   };
 }

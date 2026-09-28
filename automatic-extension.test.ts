@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import * as fs from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createTimeTrackingExtension } from "./extension";
@@ -145,9 +146,8 @@ test("workspace labels, session tasks and resume survive reloads via the shared 
 
 test("a failing store disables automatic tracking but never breaks legacy turn receipts", () => {
   const root = tempRoot("auto-ext-fail-");
-  const target = tempRoot("auto-ext-target-");
-  const dbPath = join(root, "link.sqlite");
-  symlinkSync(join(target, "gone.sqlite"), dbPath);
+  const dbPath = join(root, "invalid.sqlite");
+  mkdirSync(dbPath); // A directory cannot be opened as a database, on any platform.
   const t = 1_000_000;
   const h = harness(root, dbPath, "sess-1");
   h.emit("session_start", t);
@@ -201,6 +201,27 @@ test("terminal input cannot escape an explicit adapter root inside a larger repo
   const store = h.store();
   try { expect(store.windows()[0].end).toBe(1_011_000); }
   finally { store.close(); }
+});
+
+test("streaming events share one scope check but recheck cwd on the next event", () => {
+  const root = tempRoot("auto-ext-event-scope-");
+  const sibling = tempRoot("auto-ext-event-outside-");
+  const h = harness(root, join(root, "db.sqlite"), "sess");
+  h.emit("session_start", 1_000_000);
+  h.emit("agent_start", 1_000_000);
+  const realpath = spyOn(fs, "realpathSync");
+  try {
+    for (const event of ["message_update", "tool_execution_start", "tool_execution_end"]) {
+      realpath.mockClear();
+      h.emit(event, 1_002_000);
+      expect(realpath).toHaveBeenCalledTimes(2); // cwd and configured root, once per event
+    }
+  } finally { realpath.mockRestore(); }
+  h.ctx.cwd = sibling;
+  h.emit("message_update", 1_003_000);
+  h.emit("session_shutdown", 1_004_000);
+  expect(h.store().windows(root)[0]).toMatchObject({ start: 1_000_000, end: 1_002_000 });
+  expect(readTurnRecords(join(root, "t.jsonl"))[0]).toMatchObject({ outcome: "interrupted", observedMs: 2_000 });
 });
 
 test("factory rejects undispatchable project names and relative database paths", () => {

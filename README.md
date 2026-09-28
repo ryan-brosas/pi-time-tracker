@@ -181,6 +181,9 @@ client workspace; optionally label it once and sessions — including resume and
   gaps are recorded separately and stay **Unknown**, never silently counted.
 - An open session does not bill wall-clock lifetime: time advances only on
   observed activity, so an idle overnight session adds nothing.
+- A backward system clock cannot invent time: prior windows stay exactly as
+  recorded, capture restarts from a fresh zero-duration window at the observed
+  timestamp, and no elapsed time is inferred across the jump.
 - Windows carry the client and session task active when they happened; later
   renames never rewrite recorded rows.
 - Concurrent sessions in one workspace overlap: reports count the interval

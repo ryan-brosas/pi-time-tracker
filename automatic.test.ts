@@ -55,11 +55,13 @@ test("first signal opens a zero-length window, short gaps join, long gaps become
   expect(rows).toHaveLength(3);
   expect(rows[1]).toMatchObject({ kind: "gap", start: 301_500, end: 1_501_500 });
   expect(rows[2]).toMatchObject({ kind: "work", start: 1_501_500, end: 1_506_500 });
-  clock.touch(1_400_000); // a backward clock never manufactures time
+  const beforeRegression = rows;
+  clock.touch(1_400_000); // A backward jump opens a fresh zero-duration window.
   clock.flush();
   rows = store.windows(ws.root);
-  expect(rows).toHaveLength(3);
-  expect(rows[2]).toMatchObject({ kind: "work", start: 1_501_500, end: 1_506_500 });
+  expect(rows).toHaveLength(4);
+  expect(rows.filter(r => beforeRegression.some(previous => previous.id === r.id))).toEqual(beforeRegression);
+  expect(rows.find(r => r.start === 1_400_000)).toMatchObject({ kind: "work", end: 1_400_000 });
 });
 
 test("a restored clock continues a live session but never counts idle session lifetime", () => {
@@ -82,18 +84,32 @@ test("a restored clock continues a live session but never counts idle session li
   closeStore(reopened);
 });
 
-test("a backward checkpoint flushes pending forward evidence without accepting regressed time", () => {
-  const { store, ws } = fixture();
+test("backward clocks preserve prior evidence and recover without counting the jump, including after restart", () => {
+  const { store, path, ws } = fixture();
   const clock = new AutomaticClock(store, ws, "sess", "task");
   clock.touch(10_000);
   clock.touch(15_000);
   expect(store.latest(ws.root, "sess")?.end).toBe(10_000);
   clock.touch(1_000, true);
-  expect(store.latest(ws.root, "sess")).toMatchObject({ start: 10_000, end: 15_000 });
-  const restored = new AutomaticClock(store, ws, "sess", "task");
-  restored.touch(0, true); restored.flush();
-  expect(store.windows(ws.root)).toHaveLength(1);
-  expect(store.latest(ws.root, "sess")?.end).toBe(15_000);
+  expect(store.windows(ws.root).map(({ start, end, kind }) => ({ start, end, kind }))).toEqual([
+    { start: 1_000, end: 1_000, kind: "work" },
+    { start: 10_000, end: 15_000, kind: "work" },
+  ]);
+  clock.touch(2_000, true);
+  expect(store.windows(ws.root)[0]).toMatchObject({ start: 1_000, end: 2_000 });
+  closeStore(store);
+  const reopened = openStore(path);
+  const restored = new AutomaticClock(reopened, ws, "sess", "task");
+  restored.touch(0, true);
+  restored.touch(1_000, true);
+  const rows = reopened.windows(ws.root);
+  expect(rows).toHaveLength(3);
+  expect(rows.map(({ start, end, kind }) => ({ start, end, kind }))).toEqual([
+    { start: 0, end: 1_000, kind: "work" },
+    { start: 1_000, end: 2_000, kind: "work" },
+    { start: 10_000, end: 15_000, kind: "work" },
+  ]);
+  expect(rows.reduce((sum, row) => sum + row.end - row.start, 0)).toBe(7_000);
 });
 
 for (const change of ["client", "task"] as const) test(`long quiet gaps survive a ${change} change`, () => {

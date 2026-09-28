@@ -26,10 +26,14 @@ export class AutomaticClock {
   }
   touch(at: number, checkpoint = false): void {
     if (!Number.isSafeInteger(at) || at < 0 || at > 8.64e15) throw new Error("Invalid activity timestamp");
-    const previous = this.current ?? this.last;
+    let previous = this.current ?? this.last;
     if (previous && at < previous.end) {
-      if (checkpoint) this.flush(); // Preserve already-observed forward evidence.
-      return; // A backward clock cannot manufacture time.
+      // A backward clock must not manufacture time, but it must not freeze capture either:
+      // keep what was already observed, then re-anchor from this observed timestamp.
+      this.flush();
+      this.current = undefined;
+      this.last = undefined;
+      previous = undefined;
     }
     const same = previous?.client === this.workspace.client && previous.task === this.task;
     const gap = previous ? at - previous.end : 0;
