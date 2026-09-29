@@ -87,10 +87,10 @@ those sources through the CLI instead.
 ## Install
 
 You need Node.js >=22.19.0 (matching Pi 0.87.1's engine floor) and a
-Pi 0.87.1-compatible host. The Git/source install uses the committed
-[generated/policy.mjs](generated/policy.mjs), so installing and running that
-version needs no compiler, no Clang and no Bun. The published `0.1.0` npm package
-still needs Bend and Clang on first use; see the version-specific note below.
+Pi 0.87.1-compatible host. The Git/source install and npm packages from `0.2.0`
+use [generated/policy.mjs](generated/policy.mjs), so installing and running them
+needs no compiler, no Clang and no Bun. Older npm releases require Bend and Clang
+on first use; see the version-specific note below.
 
 The opt-in native lane exists to audit or validate that generated module. Set
 `BEND_EXECUTABLE` or `WORKTIME_BEND_BINARY` and the tracker runs a real Bend build
@@ -124,11 +124,12 @@ For a reproducible Git install, append `@<commit-sha>` to the source.
 **From [npm][npm]**
 
 ```sh
-pi install npm:pi-time-tracker@0.1.0 --local
+pi install npm:pi-time-tracker --local
 ```
 
-> The published `0.1.0` release still needs Bend and Clang on first use. Use Git
-> for the compiler-free version until a new npm release includes it.
+> This installs npm's `latest` release. Check the [published version][npm]: releases
+> before `0.2.0` need Bend and Clang on first use. Until `0.2.0` is published,
+> use Git for the compiler-free version; a Git push alone does not publish npm.
 
 **From a local checkout**
 
@@ -177,8 +178,8 @@ bun run pack:check
 source and the generated policy fit inside the package whitelist, and that tests,
 proofs and build tooling stay out of the tarball. With the pinned toolchain installed,
 `bun run test` also checks that `generated/policy.mjs` still matches its Bend sources.
-No compiler is needed to run the tracker itself; Git installs use the committed
-generated policy, and the next npm release will use it as well.
+No compiler is needed to run the tracker itself; Git installs and npm packages
+from `0.2.0` include the generated policy.
 
 Changing a `.bend` file means regenerating that artifact, which needs the pinned
 toolchain. The installer verifies both pinned archives and lays the matching
