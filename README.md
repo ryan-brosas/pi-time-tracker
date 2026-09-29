@@ -2,7 +2,7 @@
 
 # pi-time-tracker
 
-**Working-hours tracking for Pi, reconciled in native Bend.**
+**Working-hours tracking for Pi, reconciled by a tested Bend policy.**
 
 _Keep local work receipts, reconcile overlapping activity, and review the hours._
 
@@ -49,7 +49,7 @@ inspectable receipts and reconciles them without rewriting the original records.
 | ⏱️ | **Automatic tracking** | Capture agent activity within a project and its real subdirectories. |
 | 🗂️ | **Automatic work windows** | Infer elapsed working time from activity in a client's folder; no start/stop. |
 | 💽 | **Built-in database** | One private SQLite store keeps clients, session tasks and work windows across reloads. |
-| 🔀 | **Overlap reconciliation** | Count concurrent tabs once using native Bend interval union. |
+| 🔀 | **Overlap reconciliation** | Count concurrent tabs once using the tested Bend interval union. |
 | 🧾 | **Receipt auditing** | Surface missing evidence, duplicate receipts and conflicting summaries. |
 | 💾 | **Event-driven checkpoints** | Retain interval evidence when a final turn summary is missing. |
 | 📝 | **Work notes and session clock** | Record outcomes and explicit start/stop sessions separately. |
@@ -62,9 +62,9 @@ flowchart LR
   Pi["Pi events and keystrokes"] --> Adapter["TypeScript extension"]
   Adapter --> Receipts[("Local receipts")]
   Adapter --> Db[("Shared SQLite windows")]
-  Receipts --> Bridge["Native bridge"]
+  Receipts --> Bridge["Policy bridge"]
   Db --> Bridge
-  Bridge --> Bend["Bend reconciliation and audit"]
+  Bridge --> Bend["Generated Bend policy"]
   Bend --> Report["TypeScript report renderer"]
   Report --> Draft["work-report.md"]
 ```
@@ -74,21 +74,35 @@ owns Pi hooks, project scope and the command surfaces; [ledger.ts](ledger.ts)
 owns receipt persistence and calendar boundaries; [project-store.ts](project-store.ts)
 keeps workspace mappings and inferred work windows in one private SQLite
 database, and [automatic.ts](automatic.ts) derives those windows from observed
-activity. [native.ts](native.ts) sends numeric batches to
-[engine.bend](engine.bend) and [audit.bend](audit.bend).
-[report.ts](report.ts) renders the results, while [activities.ts](activities.ts)
-validates outcome notes. There is no parallel JavaScript implementation of
-interval union or receipt classification.
+activity. [native.ts](native.ts) validates numeric batches and runs the accounting
+policy emitted from [engine.bend](engine.bend), [audit.bend](audit.bend) and
+[batch.bend](batch.bend) into
+[generated/policy.mjs](generated/policy.mjs). [report.ts](report.ts) renders the
+results, while [activities.ts](activities.ts) validates outcome notes. There is no
+parallel JavaScript implementation of interval union or receipt classification: the
+generated module comes from the same Bend sources, and the opt-in native lane runs
+those sources through the CLI instead.
 
 ## Install
 
-You need Node.js >=22.19.0 (matching Pi 0.87.1's engine floor), a
-Pi 0.87.1-compatible host, Bun, native Bend and a Clang version compatible
-with that Bend release. Follow the [official Bend installation
-instructions][bend]. The tracker never installs or upgrades your compiler.
+You need Node.js >=22.19.0 (matching Pi 0.87.1's engine floor) and a
+Pi 0.87.1-compatible host. The Git/source install uses the committed
+[generated/policy.mjs](generated/policy.mjs), so installing and running that
+version needs no compiler, no Clang and no Bun. The published `0.1.0` npm package
+still needs Bend and Clang on first use; see the version-specific note below.
 
-CI tests Linux x64 with Bun 1.4.0, Bend 2.0.31 and Clang 19. Bend 2.0.7 has also
-passed the suite locally; installation layouts differ between those releases.
+The opt-in native lane exists to audit or validate that generated module. Set
+`BEND_EXECUTABLE` or `WORKTIME_BEND_BINARY` and the tracker runs a real Bend build
+instead. `BEND_EXECUTABLE` compiles the engine on first use and needs [Bend][bend]
+plus a Clang version compatible with that release, which you provide.
+`WORKTIME_BEND_BINARY` uses a trusted prebuilt engine and needs neither compiler.
+The tracker does not manage compiler installation or updates; Bend's own behavior
+applies when it is invoked. Regenerating the generated policy needs the pinned
+toolchain (see [Run from source](#run-from-source)).
+
+CI tests Linux x64 with Bun 1.4.0, Node 22.19.0, Bend 2.0.31 and Clang 19. Bend
+2.0.7 has also passed the suite locally; installation layouts differ between those
+releases.
 
 ### Install the command
 
@@ -114,6 +128,11 @@ installed without cloning:
 ```sh
 pi install npm:pi-time-tracker@0.1.0 --local
 ```
+
+> `0.1.0` predates the generated policy and still compiles Bend on first use, so it
+> needs Bend and Clang. The Git/source default is compiler-free. This npm example
+> and caveat must be updated or removed in the same reviewed change that bumps the
+> package version, before publishing a version that includes the generated policy.
 
 Approve project trust yourself and use `/reload` at an idle boundary. Load the package
 only once: use its default entry point or a project-specific adapter, never both.
@@ -144,16 +163,31 @@ project's root.
 git clone https://github.com/ryan-brosas/pi-time-tracker.git
 cd pi-time-tracker
 bun install --frozen-lockfile --ignore-scripts
-BEND_NO_TELEMETRY=1 bend --help
 bun run check
 bun run test
 bun run pack:check
 ```
 
-`pack:check` verifies that the Pi manifest, every shipped runtime import and
-both Bend sources fit inside the package whitelist, and that tests and GitHub
-configuration stay out of the tarball. There is no separate JavaScript build step. The first data-bearing report or
-reconciliation command compiles the native Bend engine if it is not cached.
+`pack:check` verifies that the Pi manifest, every shipped runtime import, every Bend
+source and the generated policy fit inside the package whitelist, and that tests,
+proofs and build tooling stay out of the tarball. With the pinned toolchain installed,
+`bun run test` also checks that `generated/policy.mjs` still matches its Bend sources.
+No compiler is needed to run the tracker itself; Git installs use the committed
+generated policy, and the next npm release will use it as well.
+
+Changing a `.bend` file means regenerating that artifact, which needs the pinned
+toolchain. The installer verifies both pinned archives and lays the matching
+compiler source beside the binary:
+
+```sh
+bash scripts/install-bend-ci.sh /absolute/toolchain/path
+export BEND_EXECUTABLE=/absolute/toolchain/path/bin/bend
+export BEND_SOURCE_DIR=/absolute/toolchain/path/source
+bun run build:bend     # regenerate generated/policy.mjs
+bun run build:check    # fail when the committed artifact is stale
+bun run proof:check    # prove LAWS.bend and the gate's own negative controls
+bun run pack:test      # pack the tarball and run it with no compiler on the Node floor
+```
 
 ## Usage
 
@@ -172,13 +206,34 @@ These are Pi slash commands, not shell commands:
 | `/work start [label]` | Start an explicit session clock. |
 | `/work stop [note]` | Close the session; its hours remain pending review. |
 | `/work status` | Show whether a session is open. |
-| `/work time` | Show the native interval-union total, excluding legacy aggregates. |
+| `/work time` | Show the interval-union total, excluding legacy aggregates. |
 | `/work report [YYYY-MM-DD]` | Write a daily report, optionally from a date onward. |
+| `work_report` | Answer a question about tracked hours from the recorded ledgers and refresh the same draft. |
 | `work_note` | Let the agent record a sanitized outcome and evidence status, without adding time. |
 
-`work_note` is a model-callable tool, not a slash command. The extension guides
-the agent to record completed milestones, but it cannot guarantee a note for
-every turn. It makes no model calls of its own.
+`work_report` and `work_note` are model-callable tools, not slash commands. Ask
+how many hours you tracked in plain language and the agent calls `work_report`
+and quotes the returned per-timezone summary instead of reading receipt logs or
+recomputing totals. The tool measures recorded intervals only: days without
+evidence stay Unknown, and the user-attested session clock, tracked agent-turn
+hours and inferred automatic windows are never added together.
+
+### How detailed is the report?
+
+Timing evidence and narrative evidence are separate, and only one of them is
+captured automatically:
+
+- **Automatic:** per-turn intervals, their heuristic labels, session identity, capped
+gaps and the automatic work windows per client and task.
+- **Narrative:** a label, a one-line outcome, an evidence status (verified,
+user-reported, draft, blocked or planned), optional links, and the turn or session
+it belongs to — recorded only when `work_note` runs.
+
+The tracker does not automatically capture prompts, transcripts or file contents.
+Keep customer data and credentials out of explicitly supplied notes. A day with
+no notes reports that no outcome notes were recorded instead of inventing detail.
+The extension guides the agent to record milestones, but it cannot guarantee a
+note for every turn. The extension makes no model calls of its own.
 
 ### Automatic tracking and `/project`
 
@@ -207,7 +262,7 @@ client workspace; optionally label it once and sessions — including resume and
 - Windows carry the client and session task active when they happened; later
   renames never rewrite recorded rows.
 - Concurrent sessions in one workspace overlap: reports count the interval
-  union once, using the same native Bend reconciliation as agent receipts.
+  union once, using the same Bend reconciliation as agent receipts.
 - Keep one Pi process per saved session. Resuming one session file in two
   processes at once records overlapping raw window rows for that session;
   reports still count the union once, but review those rows before invoicing.
@@ -253,14 +308,26 @@ defaults.
 - `WORKTIME_DB_PATH` moves the shared SQLite database; `databasePath` wins.
   Without either override, it lives under `XDG_STATE_HOME` (default
   `~/.local/state`) at `pi-time-tracker/tracker.sqlite`.
-- `BEND_EXECUTABLE` selects the compiler; the default is `bend` on `PATH`.
-- `WORKTIME_BEND_BINARY` selects a trusted prebuilt engine instead of compiling.
-- `XDG_CACHE_HOME` sets the cache base, defaulting to `~/.cache`. The engine lives
-  under `pi-worktime-native`.
+- `BEND_EXECUTABLE` opts into the native lane and selects the Bend compiler; without
+  a native-lane selector the tracker runs `generated/policy.mjs`. Setting it alone
+  compiles the engine on first use and needs Bend plus a Clang-compatible C toolchain
+  on `PATH`.
+- `WORKTIME_BEND_BINARY` opts into the native lane with a trusted prebuilt engine
+  instead of compiling; it needs no local Bend compiler or Clang.
+- `XDG_CACHE_HOME` sets the cache base for a compiled engine, defaulting to
+  `~/.cache`. The engine lives under `pi-worktime-native` and is unused by the
+  generated default.
 
 The corresponding factory options are `databasePath`, `bendExecutable`,
-`nativeExecutable` and `cacheDir`. Rebuild prebuilt engines after changing Bend
-policy. Compiler calls disable Bend telemetry and automatic updates.
+`nativeExecutable` and `cacheDir`. Any of `bendExecutable`, `nativeExecutable`,
+`BEND_EXECUTABLE` or `WORKTIME_BEND_BINARY` selects the native lane; `cacheDir`
+alone does not. If several selectors are set, `nativeExecutable` takes precedence
+over `WORKTIME_BEND_BINARY`, which takes precedence over `bendExecutable`, then
+`BEND_EXECUTABLE`; `bendExecutable` likewise takes precedence over the environment
+compiler. A native failure is reported, never silently replaced by the generated
+policy. Rebuild prebuilt engines after changing Bend policy. Build and proof checks
+disable Bend telemetry and automatic updates; native compilation disables telemetry
+but does not disable Bend automatic updates.
 
 ### Local storage and privacy
 
@@ -330,7 +397,8 @@ power-loss guarantees. Review the report before using it in a timesheet or invoi
 - [Project options and Pi integration](extension.ts)
 - [Shared project store](project-store.ts)
 - [Automatic-window derivation](automatic.ts)
-- [Native interval engine](engine.bend) and [receipt audit](audit.bend)
+- [Interval engine](engine.bend), [receipt audit](audit.bend) and
+  [stack-safe batch helpers](batch.bend)
 - [Native transport and cache](native.ts)
 - [Draft label registry](labels.ts)
 - [CI workflow](.github/workflows/ci.yml)
@@ -355,7 +423,7 @@ local consumers, in addition to its default Pi extension activation:
 - `AutomaticClock`, `DEFAULT_IDLE_GAP_MS` and `isHumanInput`: derive windows from
   observed activity and classify terminal input without storing its contents.
 - `buildAutomaticReport` and `AutomaticReportOptions`: render automatic-window
-  evidence as `{ text, summary }`, using the native Bend engine.
+  evidence as `{ text, summary }`, using the Bend accounting policy.
 
 Each `ProjectStore` owns its own SQLite connection. Separate processes or
 consumers may open the same database under WAL; writes serialize and may throw
@@ -380,18 +448,57 @@ read-only permissions and SHA-pinned Actions. Direct pushes to `main` are allowe
 CI reports the `quality` check after each push. [Dependabot](.github/dependabot.yml)
 proposes weekly Action-pin updates; it does not merge them.
 
-The [npm release workflow](.github/workflows/npm-publish.yml) is manual and runs
-only from `main`. It rejects an already-published version, reruns these gates,
-and publishes the packed artifact with OIDC provenance. It requires the npm
-package's trusted publisher to name `ryan-brosas/pi-time-tracker` and
-`npm-publish.yml`, with no environment. Never add a registry token to GitHub
-Actions. npm's first-package bootstrap must be completed before this publisher
-can be configured; a Git push alone does not publish to npm.
+### Publishing a release
+
+The [release workflow](.github/workflows/npm-publish.yml) is manual and runs only
+from `main`. To release a version:
+
+1. Bump `version` in `package.json` in a reviewed change and merge it to `main`.
+   Update or remove the version-specific npm install example and caveat in this
+   README in the same reviewed change. Already-published npm versions are immutable;
+   the workflow rejects duplicates.
+2. Run **Publish npm and GitHub release** from GitHub Actions, selecting `main`, or:
+   `gh workflow run npm-publish.yml --repo ryan-brosas/pi-time-tracker --ref main`.
+3. The workflow reruns the gates, packs once, tests that tarball without a compiler,
+   and publishes it to npm with OIDC provenance. Only after npm succeeds does a
+   separate job create `v<version>` at the tested commit and attach the same tarball
+   to a [GitHub release](https://github.com/ryan-brosas/pi-time-tracker/releases).
+   Generated notes use the categories in [.github/release.yml](.github/release.yml).
+
+Stable versions use npm's `latest` tag and GitHub's Latest release. Versions with a
+prerelease suffix use npm's `next` tag and a GitHub prerelease, not Latest. The npm
+trusted publisher must name `ryan-brosas/pi-time-tracker` and `npm-publish.yml`,
+with no environment. Never add a registry token to GitHub Actions. A Git push or
+merge alone does not publish anything.
+
+If npm succeeds but the GitHub release job fails, do not rerun all jobs or
+republish the npm version. While the verified artifact is retained (seven days),
+either finish a partially created draft release manually using that artifact, or
+delete the draft and **Re-run failed jobs** to let the workflow create a clean
+release. Existing tags pointing to another commit and existing releases are never
+overwritten. npm publishing and GitHub release creation are not atomic.
+
+### Toolchain pinning and proofs
 
 The [CI installer](scripts/install-bend-ci.sh) verifies the SHA-256 of an exact
-official Bend release and installs into a new explicitly supplied directory.
-It will not replace an existing compiler. Update its version and digest together
-and run the full suite before changing the pin.
+official Bend release and of the matching compiler source, then installs both into
+a new explicitly supplied directory. It will not replace an existing compiler.
+[scripts/bend-toolchain.json](scripts/bend-toolchain.json) owns the version,
+revision and both digests; update it and run the full suite before changing the
+pin. The released binary has no JavaScript emitter, which is why the source
+archive is pinned too.
+
+The generated module inlines the Bend `Base` definitions the policy uses, so it
+ships with the Apache-2.0 attribution in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+[LAWS.bend](LAWS.bend) states the receipt-classification obligations and
+[PROOF.bend](PROOF.bend) proves them on the pinned compiler. `bun run proof:check`
+also checks the gate itself: a broken policy must fail its law, and a law without
+its proof must be rejected as an open claim. These laws cover receipt
+classification only. Interval union is covered by the seeded discrete-coverage
+oracle in `native.test.ts`, not by a universally quantified proof, and host
+effects, the compiler and the generated module remain a trust boundary.
 
 Keep Pi callbacks, filesystem access and timezone handling in the TypeScript
 host. Put deterministic accounting policy in the side-effect-free Bend reducer,

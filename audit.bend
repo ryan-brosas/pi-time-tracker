@@ -3,6 +3,7 @@
 # Output status: 0 consistent, 1 legacy, 2 missing, 3 checkpoint-only,
 #                4 mismatch, 5 conflicting summaries.
 import Base
+import ./batch.bend as Batch
 
 type Row is Data:
   Row{group: Nat, total: Nat, intervals: Nat, present: Nat, expected: Nat, modern: Nat, variant: Nat}
@@ -34,17 +35,41 @@ def parse_row(fields: List<&2, String>) -> Maybe<&2, Row>:
     case _:
       None{}
 
-def parse(lines: List<&2, String>) -> Maybe<&2, List<&2, Row>>:
+# Same stack-safe fold as the interval side; a monadic bind nests per line.
+def row_update(got: Maybe<&2, Row>, state: Bool & List<&2, Row>) -> Bool & List<&2, Row>:
+  match got:
+    case None{}:
+      (_, out) = state
+      (True{}, out)
+    case Some{row}:
+      (+failed, out) = state
+      (failed, row <> out)
+
+# Match a direct parameter before evaluating any fields after a failure.
+def parse_step(failed: Bool, line: String, out: List<&2, Row>) -> Bool & List<&2, Row>:
+  match failed:
+    case True{}:
+      (True{}, out)
+    case False{}:
+      row_update(parse_row(Batch.split(line, ',')), (False{}, out))
+
+def parse_done(failed: Bool, out: List<&2, Row>) -> Maybe<&2, List<&2, Row>>:
+  match failed:
+    case True{}:
+      None{}
+    case False{}:
+      Some{List.reverse(&2, Row, out)}
+
+def parse(lines: List<&2, String>, state: Bool & List<&2, Row>) -> Maybe<&2, List<&2, Row>>:
   match lines:
     case Nil{}:
-      Some{Nil{}}
+      (+failed, out) = state
+      parse_done(failed, out)
     case SNil{} <> tail:
-      parse(tail)
+      parse(tail, state)
     case line <> tail:
-      do Maybe<&2, List<&2, Row>>:
-        row : Row <- parse_row(String.split(line, ','))
-        rest : List<&2, Row> <- parse(tail)
-        return row <> rest
+      (+failed, out) = state
+      parse(tail, parse_step(failed, line, out))
 
 def group(row: Row) -> Nat:
   match row:
@@ -121,7 +146,7 @@ def fold(rows: List<&2, Row>, state: Row & Nat & List<&2, String> & Bool) -> Str
   match rows:
     case Nil{}:
       (row, copies, out, conflict) = state
-      String.join(List.reverse(&2, String, show(row, copies, conflict) <> out), "")
+      Batch.concat_reversed(show(row, copies, conflict) <> out, "")
     case +next <> tail:
       (+old, copies, out, conflict) = state
       fold(tail, step(old, next, copies, out, conflict, Nat.is_eq(group(old), group(next))))
@@ -133,12 +158,18 @@ def render(rows: List<&2, Row>) -> String:
     case +row <> tail:
       "worktime-audit-v1\n" ++ fold(tail, (row, present(row), Nil{}, False{}))
 
-def reconcile(rows: Maybe<&2, List<&2, Row>>) -> IO(Unit):
-  match rows:
+# Complete pure boundary; render alone requires already-sorted rows.
+def evaluate(text: String) -> Maybe<&2, String>:
+  do Maybe<&2, String>:
+    rows : List<&2, Row> <- parse(Batch.split(Batch.normalize_crlf(text), '\n'), (False{}, Nil{}))
+    return render(Batch.sort(~Row, ~row_le, rows))
+
+def reconcile(result: Maybe<&2, String>) -> IO(Unit):
+  match result:
     case None{}:
       IO.die(Unit, 2, "Invalid receipt audit batch")
-    case Some{values}:
-      IO.write(render(List.sort(~Row, ~row_le, values)))
+    case Some{text}:
+      IO.write(text)
 
 def run(text: String) -> IO(Unit):
-  reconcile(parse(String.lines(text)))
+  reconcile(evaluate(text))

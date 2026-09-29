@@ -17,7 +17,7 @@ test("package manifest loads through Pi/Jiti and registers its public integratio
     const loaded = await loadExtensions(paths, project);
     expect(loaded.errors).toEqual([]);
     const extension = loaded.extensions[0];
-    expect([...extension.tools.keys()]).toContain("work_note");
+    expect([...extension.tools.keys()].sort()).toEqual(["work_note", "work_report"]);
     expect([...extension.commands.keys()]).toEqual(["work", "project"]);
     for (const event of ["session_start", "input", "before_agent_start", "agent_start", "message_update", "tool_execution_start", "tool_execution_end", "ui_prompt_start", "ui_prompt_end", "agent_settled", "session_before_switch", "session_shutdown"]) expect(extension.handlers.has(event)).toBe(true);
     expect(existsSync(dbPath)).toBe(false); // loading registers handlers but never opens the shared database

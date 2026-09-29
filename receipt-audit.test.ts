@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { buildWorkReport } from "./report";
 const summary = (id: string, observedMs = 60000, modern = true): TimeRecord => ({ version: 1, id, scope: "test-pi-turn", startedAt: "2026-09-27T00:00:00Z", endedAt: "2026-09-27T00:02:00Z", observedMs, outcome: "settled", label: "reddit", ...(modern ? { intervalVersion: 2 as const } : {}) });
 const chunk = (id: string): TurnChunk => ({ version: 2, turnId: id, scope: "test-pi-turn", start: "2026-09-27T00:00:00Z", end: "2026-09-27T00:01:00Z", ms: 60000, capped: false });
 
-test("native Bend classifies receipt coverage without making legacy or missing evidence zero hours", () => {
+test("Bend classifies receipt coverage without making legacy or missing evidence zero hours", () => {
   const rows = [summary("ok"), summary("old", 60000, false), summary("lost"), summary("partial", 120000), summary("conflict"), summary("conflict", 120000)];
   const audited = auditTurnReceipts(rows, [chunk("ok"), chunk("partial"), chunk("orphan"), chunk("conflict")]);
   expect(Object.fromEntries([...audited].map(([id, r]) => [id, r.status]))).toEqual({ ok: "consistent", old: "legacy", lost: "missing", partial: "mismatch", conflict: "conflict", orphan: "checkpoint-only" });
@@ -72,12 +72,16 @@ test("unsupported interval markers and fractional milliseconds are rejected, not
 test("changing an imported Bend policy module invalidates the compiled engine cache", async () => {
   const dir = mkdtempSync(join(tmpdir(), "worktime-audit-cache-"));
   try {
-    for (const file of ["native.ts", "engine.bend", "audit.bend"]) copyFileSync(join(import.meta.dir, file), join(dir, file));
+    copyFileSync(join(import.meta.dir, "native.ts"), join(dir, "native.ts"));
+    for (const file of readdirSync(import.meta.dir).filter(file => file.endsWith(".bend"))) copyFileSync(join(import.meta.dir, file), join(dir, file));
     const cloned = await import(join(dir, "native.ts"));
     const options = { cacheDir: join(dir, "cache") };
-    const first = cloned.nativeExecutable(options);
-    appendFileSync(join(dir, "audit.bend"), "\n# cache invalidation regression\n");
-    const second = cloned.nativeExecutable(options);
-    expect(second).not.toBe(first);
+    let previous = cloned.nativeExecutable(options);
+    for (const file of ["audit.bend", "batch.bend"]) {
+      appendFileSync(join(dir, file), `\n# cache invalidation regression ${file}\n`);
+      const next = cloned.nativeExecutable(options);
+      expect(next).not.toBe(previous);
+      previous = next;
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 60000);

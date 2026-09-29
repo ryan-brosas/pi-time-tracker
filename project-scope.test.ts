@@ -41,7 +41,7 @@ test("default root comes from the Pi context and stays isolated across reused fa
     a.ctx.cwd = bRoot; a.emit("agent_start"); now += 60000; a.emit("agent_settled");
     expect(readTurnRecords(join(bRoot, "exports", "pi-worktime.jsonl"))).toHaveLength(1);
     a.ctx.cwd = aRoot; await a.commands.get("work").handler("report", a.ctx);
-    expect(readFileSync(join(aRoot, "exports", "work-report.md"), "utf8")).toContain("native Bend");
+    expect(readFileSync(join(aRoot, "exports", "work-report.md"), "utf8")).toMatch(/Reconciliation engine: \S+/); // lane-independent: the report names whichever engine ran
   } finally { rmSync(parent, { recursive: true, force: true }); }
 });
 

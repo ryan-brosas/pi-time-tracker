@@ -2,6 +2,7 @@
 # No prompts, notes, addresses, network access, clocks or billing policy.
 import Base
 import ./audit.bend as Audit
+import ./batch.bend as Batch
 
 type Span is Data:
   Span{group: Nat, start: Nat, end: Nat}
@@ -24,17 +25,45 @@ def parse_fields(fields: List<&2, String>) -> Maybe<&2, Span>:
     case _:
       None{}
 
-def parse_lines(lines: List<&2, String>) -> Maybe<&2, List<&2, Span>>:
+# Fold every row without a monadic bind: a bind would nest one closure per
+# line and overflow the JS stack on a year of receipts. Tail recursion only.
+def span_update(got: Maybe<&2, Span>, state: Bool & List<&2, Span>) -> Bool & List<&2, Span>:
+  match got:
+    case None{}:
+      (_, out) = state
+      (True{}, out)
+    case Some{span}:
+      (+failed, out) = state
+      (failed, span <> out)
+
+# Match a direct parameter before evaluating any fields after a failure.
+def parse_step(failed: Bool, line: String, out: List<&2, Span>) -> Bool & List<&2, Span>:
+  match failed:
+    case True{}:
+      (True{}, out)
+    case False{}:
+      span_update(parse_fields(Batch.split(line, ',')), (False{}, out))
+
+# Bend 2.0.7 rejects a match on a binder captured from a destructured parameter,
+# so the final decision lives in its own def and the fold only forwards the state.
+def parse_done(failed: Bool, out: List<&2, Span>) -> Maybe<&2, List<&2, Span>>:
+  match failed:
+    case True{}:
+      None{}
+    case False{}:
+      Some{List.reverse(&2, Span, out)}
+
+def parse_lines(lines: List<&2, String>, state: Bool & List<&2, Span>) -> Maybe<&2, List<&2, Span>>:
   match lines:
     case Nil{}:
-      Some{Nil{}}
+      (+failed, out) = state
+      parse_done(failed, out)
     case SNil{} <> rest:
-      parse_lines(rest)
+      parse_lines(rest, state)
     case line <> rest:
-      do Maybe<&2, List<&2, Span>>:
-        span : Span <- parse_fields(String.split(line, ','))
-        tail : List<&2, Span> <- parse_lines(rest)
-        return span <> tail
+      (+failed, out) = state
+      parse_lines(rest, parse_step(failed, line, out))
+
 
 def span_le(a: Span, b: Span) -> Bool:
   match a b:
@@ -84,7 +113,7 @@ def totals(spans: List<&2, Span>, state: Nat & Nat & List<&2, String>) -> String
   match spans:
     case Nil{}:
       (g, total, out) = state
-      String.join(List.reverse(&2, String, row(g, total) <> out), "")
+      Batch.concat_reversed(row(g, total) <> out, "")
     case Span{+ng, s, e} <> tail:
       (+g, total, out) = state
       totals(tail, group_step(g, total, ng, Nat.sub(e, s), out, Nat.is_eq(g, ng)))
@@ -96,19 +125,26 @@ def render(spans: List<&2, Span>) -> String:
     case Span{g, s, e} <> tail:
       "worktime-v1\n" ++ totals(tail, (g, Nat.sub(e, s), Nil{}))
 
-def reconcile(parsed: Maybe<&2, List<&2, Span>>) -> IO(Unit):
-  match parsed:
+# Complete pure boundary shared by the native CLI and generated JS.
+# Keep validation, ordering and union here, not in host-language callers.
+def evaluate(text: String) -> Maybe<&2, String>:
+  do Maybe<&2, String>:
+    spans : List<&2, Span> <- parse_lines(Batch.split(Batch.normalize_crlf(text), '\n'), (False{}, Nil{}))
+    return render(merge_all(Batch.sort(~Span, ~span_le, spans), Nil{}))
+
+def reconcile(result: Maybe<&2, String>) -> IO(Unit):
+  match result:
     case None{}:
       IO.die(Unit, 2, "Invalid interval batch")
-    case Some{spans}:
-      IO.write(render(merge_all(List.sort(~Span, ~span_le, spans), Nil{})))
+    case Some{text}:
+      IO.write(text)
 
 def dispatch(audit: Bool, text: String) -> IO(Unit):
   match audit:
     case True{}:
       Audit.run(text)
     case False{}:
-      reconcile(parse_lines(String.lines(text)))
+      reconcile(evaluate(text))
 
 def read_text(text: String, within_limit: Bool, audit: Bool) -> IO(Unit):
   match within_limit:
