@@ -5,10 +5,12 @@ project-specific context, not exceptions. Surface conflicts for clarification.
 
 ## Context
 
-[README.md](README.md) owns the project's purpose, usage, architecture and
-non-goals. Use its [development setup](README.md#run-from-source) and
-[release procedure](README.md#publishing-a-release), rather than creating parallel
-setup or release instructions. [SECURITY.md](SECURITY.md) owns reporting and
+[README.md](README.md) owns the overview and quick start.
+[Usage and configuration](docs/usage.md) covers commands and storage;
+[development](docs/development.md) owns architecture,
+[setup](docs/development.md#run-from-source) and the
+[release procedure](docs/development.md#publishing-a-release). Do not create
+parallel instructions. [SECURITY.md](SECURITY.md) owns reporting and
 private-data boundaries. [REVIEW.md](REVIEW.md) is historical evidence, not a
 current verification result.
 
@@ -21,7 +23,7 @@ bun run pack:check
 ```
 
 The full suite needs the pinned Bend binary, matching compiler source and Clang;
-follow the README setup even though normal package use is compiler-free. For
+follow the development setup even though normal package use is compiler-free. For
 policy or release changes, also run the drift, proof and compiler-free artifact
 checks defined in [CI](.github/workflows/ci.yml).
 
@@ -45,5 +47,5 @@ checks defined in [CI](.github/workflows/ci.yml).
 - A checkout and an npm package with the same version need not contain the same
   code. Verify the published artifact before changing install claims. Every push
   to `main` publishes a release whose version is generated in CI, so the baseline
-  in `package.json` is not the version being shipped; [README.md](README.md) owns
-  the release procedure.
+  in `package.json` is not the version being shipped;
+  [development](docs/development.md#publishing-a-release) owns the release procedure.
