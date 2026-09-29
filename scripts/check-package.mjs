@@ -38,19 +38,25 @@ for (const entry of entries ?? []) {
   else if (!shipped.has(normalize(entry.slice(2)))) fail(`pi.extensions entry is missing from the package payload: ${entry}`);
 }
 
-for (const required of ["index.ts", "engine.bend", "audit.bend"]) {
-  if (!shipped.has(required)) fail(`${required} must ship in the package payload`);
+// The runtime needs every Bend source for the opt-in native lane, plus the
+// generated policy that makes a compiler unnecessary by default.
+const required = ["index.ts", "engine.bend", "audit.bend", "batch.bend", "generated/policy.mjs", "generated/policy.d.mts", "THIRD_PARTY_NOTICES.md"];
+for (const file of required) {
+  if (!shipped.has(file)) fail(`${file} must ship in the package payload`);
 }
 
 for (const file of shipped) {
   if (/\.test\.ts$/.test(file)) fail(`test file must not ship: ${file}`);
+  if (file === "LAWS.bend" || file === "PROOF.bend") fail(`law or proof file must not ship: ${file}`);
+  if (file.startsWith("scripts/")) fail(`build tooling must not ship: ${file}`);
   if (file.startsWith(".github/")) fail(`repository automation must not ship: ${file}`);
   if (file === "bun.lock" || file.startsWith("tsconfig")) fail(`development-only file must not ship: ${file}`);
-  if (!/\.(ts|bend|json|md)$/.test(file)) fail(`unexpected file type in payload: ${file}`);
+  if (!/\.(ts|bend|mjs|mts|json|md)$/.test(file)) fail(`unexpected file type in payload: ${file}`);
 }
 
-// Every local import inside shipped TypeScript must itself be shipped, or Pi fails to load the package.
-for (const file of [...shipped].filter(f => f.endsWith(".ts"))) {
+// Every local import inside shipped runtime files must itself be shipped, or Pi fails to load the package.
+const runtime = [...shipped].filter(f => f.endsWith(".ts") || f.endsWith(".mjs"));
+for (const file of runtime) {
   const source = readFileSync(join(root, file), "utf8");
   for (const [, specifier] of source.matchAll(/from\s+"(\.\/[^"]+)"/g)) {
     const resolved = normalize(join(dirname(file), specifier));
@@ -60,13 +66,18 @@ for (const file of [...shipped].filter(f => f.endsWith(".ts"))) {
   }
 }
 
-// Runtime state must never be baked into the package.
-const payloadFiles = [...shipped].sort();
-if (process.env.DEBUG) console.log(payloadFiles.join("\n"));
+// Policy modules import each other; a missing helper breaks both lanes at runtime.
+for (const file of [...shipped].filter(f => f.endsWith(".bend"))) {
+  const source = readFileSync(join(root, file), "utf8");
+  for (const [, specifier] of source.matchAll(/^import\s+\.\/([^\s]+)\s+as\s+/gm)) {
+    const resolved = normalize(join(dirname(file), specifier));
+    if (!shipped.has(resolved)) fail(`${file} imports ${specifier}, which the payload does not ship`);
+  }
+}
 
 if (failures.length) {
   console.error(`Package payload is not distributable (${failures.length} problem${failures.length === 1 ? "" : "s"}):`);
   for (const message of failures) console.error(` - ${message}`);
   process.exit(1);
 }
-console.log(`Package payload OK: ${payloadFiles.length} files, entries ${(entries ?? []).join(", ")}`);
+console.log(`Package payload OK: ${[...shipped].sort().length} files, entries ${(entries ?? []).join(", ")}`);

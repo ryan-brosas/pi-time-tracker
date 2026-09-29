@@ -1,6 +1,6 @@
 import { readActivities, type ActivityNote } from "./activities.ts";
 import { inspectJsonl, localDayKey, readChunks, readTurnRecords, readWorkSessions, splitIntervalByLocalDay, type Interval, type TimeRecord } from "./ledger.ts";
-import { auditTurnReceipts, reconcileIntervals, type NativeOptions } from "./native.ts";
+import { auditTurnReceipts, engineLabel, reconcileIntervals, type NativeOptions } from "./native.ts";
 import type { WorkWindow } from "./project-store.ts";
 
 export const minutes = (ms: number) => `${(ms / 60000).toFixed(1)} min`;
@@ -22,7 +22,7 @@ interface Day {
   auto: number; autoSplit: Map<string, number>; gaps: Interval[];
 }
 
-/** Share calendar partitioning/filtering; interval unions still belong to native Bend. */
+/** Share calendar partitioning/filtering; interval unions still belong to the Bend policy. */
 function reportDayVisitor<T>(tz: string, sinceDay: string | null, day: (key: string) => T) {
   return (start: number, end: number, fn: (d: T, interval: Interval) => void) => {
     let cursor = start;
@@ -33,7 +33,7 @@ function reportDayVisitor<T>(tz: string, sinceDay: string | null, day: (key: str
   };
 }
 
-/** Calendar preparation/rendering in JS; every interval union is owned by native Bend. */
+/** Calendar preparation/rendering in JS; every interval union is owned by the Bend policy. */
 export function buildWorkReport(options: ReportOptions): { text: string; summary: string } {
   const { scopePrefix, timezones, sinceDay } = options;
   const automatic = options.automatic;
@@ -99,7 +99,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
   const totals = reconcileIntervals(groups, options);
   const mismatched = [...turns.values()].filter(t => audits.get(t.id)?.status === "mismatch");
   const oldBotLabels = [...turns.values()].filter(t => t.label === "antibot" && t.labelSource === "tools").length;
-  const lines: string[] = ["# Work-time report (draft)", "", `Generated ${new Date(options.now).toISOString()} · scope ${safe(options.root)}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", "Reconciliation engine: native Bend (worktime-v1; worktime-audit-v1).", ""];
+  const lines: string[] = ["# Work-time report (draft)", "", `Generated ${new Date(options.now).toISOString()} · scope ${safe(options.root)}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", `Reconciliation engine: ${engineLabel(options)} (worktime-v1; worktime-audit-v1).`, ""];
   const summaries: string[] = [];
   for (const [tz, days] of zones) {
     const time = (at: number) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(at));
@@ -112,6 +112,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
       autoTotal += totals[d.auto]; hasAuto ||= groups[d.auto].length > 0;
       lines.push(`### ${key}`, "", `- Tracked working hours: ${measured ? hours(totals[d.agent]) : "Unknown (no interval evidence)"}.`, `- Session clock: ${attested ? `user-attested ${hours(totals[d.session])}` : "Unknown (no closed session)"}.`);
       if (d.legacy.length || d.missing.length || d.conflicts.size || [...d.details.values()].some(v => audits.get(v.turnId)?.status === "mismatch")) lines.push("- Coverage is incomplete. Recorded intervals do not establish this day's full working hours.");
+      if (!d.notes.length && (measured || attested || groups[d.auto].length)) lines.push("- No outcome notes were recorded for this day: timestamps and labels show activity, not what was completed.");
       for (const start of d.open) lines.push(`- Open session since ${new Date(start).toISOString()}; end Unknown.`);
       for (const [label, id] of d.labels) labelTotals.set(label, (labelTotals.get(label) ?? 0) + totals[id]);
       if (d.details.size) {
@@ -140,13 +141,13 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
   const malformed = [options.turnsLog, options.chunksLog, options.sessionsLog, options.activitiesLog].reduce((n, p) => n + inspectJsonl(p).malformedLines, 0);
   const invalid = inspectJsonl(options.turnsLog).rows.length - allTurns.length + inspectJsonl(options.chunksLog).rows.length - allChunks.length;
   lines.push("Notes:",
-    `- Tracked working hours are the wall-clock union of recorded intervals (all dates: ${hours(totals[allAgent])}). Concurrent tabs and duplicate receipts are deduplicated by native Bend.`,
+    `- Tracked working hours are the wall-clock union of recorded intervals (all dates: ${hours(totals[allAgent])}). Concurrent tabs and duplicate receipts are deduplicated by the Bend policy.`,
     `- Legacy aggregate records: ${legacy.length} (all dates). Only unpaired, pre-marker summaries are legacy pre-chunk turns; never add them to interval totals.`,
     `- Unsettled/checkpoint-only turns: ${checkpointOnly}; missing interval evidence: ${missing.length} (all dates).`,
     `- Rejected JSON lines: ${malformed}; invalid turn/interval records: ${invalid}. Source ledgers are not rewritten.`,
     ...mismatched.map(t => `- Interval mismatch for turn ${safe(t.id)}: summary ${minutes(t.observedMs)}, durable intervals ${minutes(audits.get(t.id)!.durableMs)}. Reconcile missing or conflicting evidence before invoicing.`),
     ...[...conflicts].map(id => `- Conflicting summaries for turn ${safe(id)}: no last-writer selection. Original receipts retained; only independent interval evidence contributes to tracked totals.`),
-    `- Native receipt audit: ${conflicts.size} conflicting groups; ${[...audits.values()].filter(a => a.status !== "conflict" && a.summaryCopies > 1).length} exact-duplicate summary groups, counted once. This is consistency checking, not cryptographic verification.`,
+    `- Bend receipt audit: ${conflicts.size} conflicting groups; ${[...audits.values()].filter(a => a.status !== "conflict" && a.summaryCopies > 1).length} exact-duplicate summary groups, counted once. This is consistency checking, not cryptographic verification.`,
     ...(oldBotLabels ? [`- Historical tool-only antibot labels needing review: ${oldBotLabels}. Generic browser use is not anti-bot evidence; old records are retained unchanged.`] : []),
     "- Session-clock hours and tracked turn hours are separate measures; never add the same time twice. Review before invoicing.",
     "- A capped silent gap (max 5 min per gap) is an estimate, not continuous evidence. Missing coverage and open ends stay Unknown.",
@@ -155,7 +156,8 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
       "- Inferred elapsed work, tracked agent turns and the manual session clock are separate measures; never add the same time twice.",
     ] : []),
     "- Labels are heuristic drafts unless explicitly supplied. Per-label totals may overlap across concurrent sessions.",
-    "- Notes document outcomes, not extra duration. A verification date is not a publication date. No external sync is performed.", "");
+    "- Notes document outcomes, not extra duration. A verification date is not a publication date. No external sync is performed.",
+    "- Outcome detail exists only where a work note was recorded with a label, status and summary. Prompts, transcripts and file contents are never captured, so missing narrative is disclosed rather than reconstructed.", "");
   return { text: lines.join("\n"), summary: summaries.join(" | ") };
 }
 
@@ -189,7 +191,7 @@ export function buildAutomaticReport(options: AutomaticReportOptions): { text: s
     for (const w of gaps) eachPart(w.start, w.end, (d, interval) => { d.gaps.push({ ...interval, root: w.root }); });
   }
   const totals = reconcileIntervals(groups, options);
-  const lines: string[] = ["# Automatic work-window report (draft)", "", `Generated ${new Date(options.now).toISOString()} · database ${safe(options.scope)}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", "Inferred elapsed work windows across workspaces, reconciled by native Bend (worktime-v1).", ""];
+  const lines: string[] = ["# Automatic work-window report (draft)", "", `Generated ${new Date(options.now).toISOString()} · database ${safe(options.scope)}${sinceDay ? ` · since ${sinceDay}` : ""}`, "", `Inferred elapsed work windows across workspaces, reconciled by ${engineLabel(options)} (worktime-v1).`, ""];
   const summaries: string[] = [];
   for (const [tz, days] of zones) {
     const time = (at: number) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(new Date(at));

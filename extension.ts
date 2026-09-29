@@ -1,4 +1,5 @@
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -16,6 +17,10 @@ export interface TimeTrackingOptions extends NativeOptions {
   databasePath?: string; idleGapMs?: number; projectCommand?: string;
 }
 type Ctx = { cwd: string; mode: string; sessionManager?: { getSessionId: () => string | null }; ui: { notify: (message: string, type?: "info" | "warning" | "error") => void; setStatus: (key: string, text: string | undefined) => void; onTerminalInput?: (handler: (data: string) => { consume?: boolean; data?: string } | undefined) => () => void } };
+
+export const reportParameters = Type.Object({
+  sinceDay: Type.Optional(Type.String({ description: "Optional earliest local day to include, as YYYY-MM-DD. Omit to include every recorded day." })),
+}, { additionalProperties: false });
 
 /** Shared day-argument validation for /work report and /project report. */
 export function parseReportDay(args: string, usage = "[YYYY-MM-DD]"): string | null {
@@ -188,13 +193,15 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       const reportWorkspace = workspace ?? s.resolveWorkspace(ctx.cwd);
       return { windows: s.windows(reportWorkspace.root), idleGapMs };
     };
+    // One builder for the slash command and the model-facing tool: no second summary
+    // path, and the draft is written at most once per call.
     const renderWorkReport = (day: string | null, ctx: Ctx) => {
       turn?.checkpoint();
       flushAutomatic(ctx);
       const automatic = automaticEvidence(ctx);
       const result = buildWorkReport({ ...options, root, scopePrefix, timezones, now: now(), sinceDay: day, turnsLog, chunksLog, sessionsLog, activitiesLog, ...(automatic ? { automatic } : {}) });
       writeFilePrivate(reportFile, result.text);
-      ctx.ui.notify(`${result.summary}. Full draft: ${reportFile}`, "info");
+      return { summary: result.summary, reportFile };
     };
     pi.on("session_start", (_event, ctx) => {
       close(ctx, "interrupted"); sessionId = ctx.sessionManager?.getSessionId() ?? randomUUID(); requestLabel = undefined;
@@ -256,6 +263,26 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         return { content: [{ type: "text", text: `Recorded ${note.label}: ${note.summary} (${note.status}); duration Unallocated. No external sync.` }], details: { noteId: note.id } };
       },
     });
+    // Answer hours questions directly from recorded receipts. Without this, a model
+    // reconstructs totals from raw JSONL, which is slow and easy to get wrong.
+    pi.registerTool({
+      name: `${command}_report`, label: "Working-hours draft",
+      description: "Summarize the tracked working hours already recorded for this workspace and refresh the local draft (exports/work-report.md). Use it for any question about how much time was tracked, instead of reading raw receipt logs. The tracked agent-turn union, the user-attested session clock and the inferred automatic windows stay separate measures and are never added together. It writes the normal local draft; it never invoices, syncs or invents missing hours.",
+      promptSnippet: "Summarize recorded working hours for this workspace and refresh the local draft.",
+      promptGuidelines: [`When the user asks about tracked hours, time spent, or a work report, call ${command}_report instead of reading receipt logs or recomputing totals in the shell.`, `Report the returned per-timezone summary and cite the draft path; keep the session clock, tracked agent-turn hours and inferred windows separate and never add them.`, `Record outcome detail with ${command}_note: ${command}_report only measures recorded intervals and leaves days without evidence Unknown.`],
+      executionMode: "sequential",
+      parameters: reportParameters,
+      execute: async (_toolCallId, args, _signal, _update, ctx) => {
+        if (!scopedCwd(ctx.cwd)) throw new Error("Working-hours reports are limited to this workspace");
+        const requested = (args as { sinceDay?: string }).sinceDay ?? "";
+        const day = parseReportDay(requested);
+        const { summary, reportFile: file } = renderWorkReport(day, ctx as unknown as Ctx);
+        return {
+          content: [{ type: "text", text: `${summary}. Full draft: ${file}\nMeasures stay separate; outcome detail comes only from recorded work notes.` }],
+          details: { summary, reportFile: file, sinceDay: day },
+        };
+      },
+    });
     const openSession = () => readWorkSessions(sessionsLog).find(s => s.scope === sessionScope && s.endedAt === null) ?? null;
     const subcommands: Record<string, (args: string, ctx: Ctx) => void> = {
       start: (args, ctx) => {
@@ -281,7 +308,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         const [total] = reconcileIntervals([chunks.map(c => ({ start: Date.parse(c.start), end: Date.parse(c.end) }))], options);
         ctx.ui.notify(`${records.length} settled Pi turns · ${chunks.length ? hours(total) : "Unknown"} tracked working hours (interval union). Legacy aggregates excluded. Log: ${turnsLog}`, "info");
       },
-      report: (args, ctx) => { renderWorkReport(parseReportDay(args), ctx); },
+      report: (args, ctx) => { const { summary, reportFile: file } = renderWorkReport(parseReportDay(args), ctx); ctx.ui.notify(`${summary}. Full draft: ${file}`, "info"); },
     };
     pi.registerCommand(command, {
       description: `Working hours: /${command} start|stop|status|time|report`,
@@ -333,7 +360,8 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
           ctx.ui.notify(`${result.summary}. Full draft: ${file}. Repository-local agent and manual receipts are separate measures and are not included.`, "info");
           return;
         }
-        renderWorkReport(parseReportDay(args, "[YYYY-MM-DD|all]"), ctx);
+        const { summary, reportFile: file } = renderWorkReport(parseReportDay(args, "[YYYY-MM-DD|all]"), ctx);
+        ctx.ui.notify(`${summary}. Full draft: ${file}`, "info");
       },
     };
     pi.registerCommand(projectCommand, {

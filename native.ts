@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Interval, TimeRecord, TurnChunk } from "./ledger.ts";
+import { evaluateAudit, evaluateIntervals } from "./generated/policy.mjs";
 
 export interface NativeOptions { bendExecutable?: string; nativeExecutable?: string; cacheDir?: string }
 const source = join(dirname(fileURLToPath(import.meta.url)), "engine.bend");
@@ -34,9 +35,12 @@ export function nativeExecutable(options: NativeOptions = {}): string {
   return target;
 }
 
-function runNative(rows: string[], options: NativeOptions, audit = false): string[] {
-  const input = rows.join("\n");
-  if (Buffer.byteLength(input) > MAX_INPUT_BYTES) throw new Error("Interval batch exceeds the native engine's 8 MiB limit");
+/** A configured compiler or prebuilt binary is an explicit request for the native lane. */
+function usesNative(options: NativeOptions): boolean {
+  return Boolean(options.nativeExecutable ?? process.env.WORKTIME_BEND_BINARY ?? options.bendExecutable ?? process.env.BEND_EXECUTABLE);
+}
+
+function runNative(input: string, options: NativeOptions, audit = false): string {
   const binary = nativeExecutable(options);
   const temp = mkdtempSync(join(tmpdir(), "pi-worktime-native-"));
   try {
@@ -44,13 +48,35 @@ function runNative(rows: string[], options: NativeOptions, audit = false): strin
     writeFileSync(path, input, { mode: 0o600 });
     const result = spawnSync(binary, ["--threads", "1", "--", path, ...(audit ? ["audit"] : [])], { encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
     if (result.error || result.status !== 0) throw new Error(`Bend reconciliation failed: ${result.error?.message ?? result.stderr.slice(-1000)}`);
-    const [header, ...lines] = result.stdout.trim().split("\n");
-    if (header !== (audit ? "worktime-audit-v1" : "worktime-v1")) throw new Error("Invalid Bend response protocol; rebuild a stale prebuilt engine");
-    return lines;
+    return result.stdout;
   } finally { rmSync(temp, { recursive: true, force: true }); }
 }
 
-/** Native Bend owns sorting and interval union. JS validates transport and renders dates. */
+/** Which accounting runtime the given options select; reports state it for transparency. */
+export function engineLabel(options: NativeOptions = {}): string {
+  return usesNative(options) ? "native Bend" : "generated Bend policy";
+}
+
+/** Generated from the same Bend sources; no compiler, Bun or subprocess at runtime. */
+function runGenerated(input: string, audit: boolean): string {
+  const result: unknown = audit ? evaluateAudit(input) : evaluateIntervals(input);
+  if (result === null || typeof result !== "object" || !("$" in result)) throw new Error("Invalid Bend policy response");
+  const outcome = result as { $: string; value?: unknown };
+  if (outcome.$ === "None") throw new Error(audit ? "Invalid receipt audit batch" : "Invalid interval batch");
+  if (outcome.$ !== "Some" || typeof outcome.value !== "string") throw new Error("Invalid Bend policy response");
+  return outcome.value;
+}
+
+function runBatch(rows: string[], options: NativeOptions, audit = false): string[] {
+  const input = rows.join("\n");
+  if (Buffer.byteLength(input) > MAX_INPUT_BYTES) throw new Error("Interval batch exceeds the 8 MiB limit");
+  const text = usesNative(options) ? runNative(input, options, audit) : runGenerated(input, audit);
+  const [header, ...lines] = text.trim().split("\n");
+  if (header !== (audit ? "worktime-audit-v1" : "worktime-v1")) throw new Error("Invalid Bend response protocol; rebuild the generated policy or a stale prebuilt engine");
+  return lines;
+}
+
+/** Bend owns sorting and interval union. JS validates transport and renders dates. */
 export function reconcileIntervals(groups: readonly (readonly Interval[])[], options: NativeOptions = {}): number[] {
   const rows: string[] = [];
   for (const [group, intervals] of groups.entries()) for (const { start, end } of intervals) {
@@ -59,7 +85,7 @@ export function reconcileIntervals(groups: readonly (readonly Interval[])[], opt
   }
   if (!rows.length) return groups.map(() => 0);
   const totals = groups.map(() => 0), seen = new Set<number>();
-  for (const line of runNative(rows, options)) {
+  for (const line of runBatch(rows, options)) {
     if (!/^\d+,\d+$/.test(line)) throw new Error("Invalid Bend total row");
     const [id, total] = line.split(",").map(Number);
     if (!isNat(id) || id >= groups.length || seen.has(id) || !isNat(total)) throw new Error("Invalid Bend total value");
@@ -95,7 +121,7 @@ export function auditTurnReceipts(turns: readonly TimeRecord[], chunks: readonly
     }
   }
   const result = new Map<string, ReceiptAudit>();
-  for (const line of runNative(rows, options, true)) {
+  for (const line of runBatch(rows, options, true)) {
     if (!/^\d+,\d+,\d+,\d+$/.test(line)) throw new Error("Invalid Bend audit row");
     const [group, status, durableMs, summaryCopies] = line.split(",").map(Number);
     if (![group, status, durableMs, summaryCopies].every(isNat) || group >= ids.length || status >= auditStatuses.length || result.has(ids[group]) || durableMs !== totals[group] || summaryCopies !== summaries[group].length) throw new Error("Invalid Bend audit value");

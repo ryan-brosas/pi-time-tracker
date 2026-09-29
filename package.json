@@ -1,10 +1,10 @@
 {
   "name": "pi-time-tracker",
   "version": "0.1.0",
-  "description": "Private working-hours receipts for Pi, with native Bend reconciliation and auditing.",
+  "description": "Private working-hours receipts for Pi, reconciled by a verified Bend accounting policy.",
   "license": "MIT",
   "keywords": ["pi-package"],
-  "files": ["*.ts", "!*.test.ts", "*.bend"],
+  "files": ["*.ts", "!*.test.ts", "*.bend", "!LAWS.bend", "!PROOF.bend", "generated/policy.mjs", "generated/policy.d.mts", "THIRD_PARTY_NOTICES.md"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "repository": { "type": "git", "url": "git+https://github.com/ryan-brosas/pi-time-tracker.git" },
@@ -12,7 +12,15 @@
   "homepage": "https://github.com/ryan-brosas/pi-time-tracker#readme",
   "exports": { ".": "./index.ts" },
   "pi": { "extensions": ["./index.ts"] },
-  "scripts": { "test": "bun test --timeout 90000 .", "check": "tsc --noEmit", "pack:check": "bun scripts/check-package.mjs" },
+  "scripts": {
+    "test": "bun test --timeout 90000 .",
+    "check": "tsc --noEmit",
+    "pack:check": "bun scripts/check-package.mjs",
+    "build:bend": "bun scripts/build-bend.mjs",
+    "build:check": "bun scripts/build-bend.mjs --check",
+    "proof:check": "bun test proof-gate.test.ts",
+    "pack:test": "bun scripts/pack-test.mjs"
+  },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*", "typebox": "*" },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1",

@@ -14,12 +14,13 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
     env:
       BEND_NO_TELEMETRY: "1"
+      BEND_SOURCE_DIR: ${{ runner.temp }}/bend/source
       CC: clang-19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,6 +29,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
+      # Node 24 provides the npm release that supports OIDC trusted publishing.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -45,18 +47,24 @@ jobs:
           fi
       - name: Install native compiler dependency
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-19
-      - name: Install pinned Bend
+      - name: Install pinned Bend toolchain
         run: |
           bash scripts/install-bend-ci.sh "$RUNNER_TEMP/bend"
           echo "$RUNNER_TEMP/bend/bin" >> "$GITHUB_PATH"
       - name: Install locked dependencies
         run: bun install --frozen-lockfile --ignore-scripts
+      - name: Reject a stale generated Bend policy
+        run: bun run build:check
+      - name: Check the proof obligations
+        run: bun run proof:check
       - name: Type check
         run: bun run check
-      - name: Test native Bend and Pi integration
+      - name: Test Bend policy and Pi integration
         run: bun run test
       - name: Validate Pi package payload
         run: bun run pack:check
+      - name: Verify the packaged artifact without a compiler
+        run: bun run pack:test
       - name: Pack verified artifact and publish via npm OIDC
         run: |
           version=$(node -p "require('./package.json').version")

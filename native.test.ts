@@ -3,26 +3,62 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { nativeExecutable, reconcileIntervals } from "./native";
+import { auditTurnReceipts, nativeExecutable, reconcileIntervals } from "./native";
+import type { TimeRecord, TurnChunk } from "./ledger";
+import { evaluateAudit, evaluateIntervals } from "./generated/policy.mjs";
 
-test("actual native Bend deduplicates nested, touching and unsorted intervals at epoch precision", () => {
-  const epoch = Date.parse("2026-09-27T00:00:00Z");
-  expect(reconcileIntervals([
-    [{ start: 5, end: 20 }, { start: 0, end: 10 }, { start: 5, end: 20 }, { start: 30, end: 40 }, { start: 20, end: 25 }],
-    [{ start: epoch, end: epoch + 60_000 }, { start: epoch + 20_000, end: epoch + 80_000 }],
-    [], [{ start: 2 ** 48 - 10, end: 2 ** 48 - 1 }], [{ start: 0, end: 0 }],
-  ])).toEqual([35, 80_000, 0, 9, 0]);
-}, 90_000);
+/** The generated policy is the default lane; clear any explicit native selection. */
+function generated<T>(run: () => T): T {
+  const bend = process.env.BEND_EXECUTABLE, binary = process.env.WORKTIME_BEND_BINARY;
+  delete process.env.BEND_EXECUTABLE; delete process.env.WORKTIME_BEND_BINARY;
+  try { return run(); } finally {
+    if (bend === undefined) delete process.env.BEND_EXECUTABLE; else process.env.BEND_EXECUTABLE = bend;
+    if (binary === undefined) delete process.env.WORKTIME_BEND_BINARY; else process.env.WORKTIME_BEND_BINARY = binary;
+  }
+}
+const nativeLane = () => ({ nativeExecutable: nativeExecutable() });
 
-test("native reducer agrees with a seeded discrete-time coverage oracle", () => {
-  let seed = 73;
-  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
-  const groups = Array.from({ length: 50 }, () => Array.from({ length: 35 }, () => { const start = random() % 200; return { start, end: start + random() % 35 }; }));
-  const expected = groups.map(ivs => { const covered = new Set<number>(); for (const iv of ivs) for (let t = iv.start; t < iv.end; t++) covered.add(t); return covered.size; });
-  expect(reconcileIntervals(groups)).toEqual(expected);
+const mixed = [
+  [{ start: 5, end: 20 }, { start: 0, end: 10 }, { start: 5, end: 20 }, { start: 30, end: 40 }, { start: 20, end: 25 }],
+  [{ start: Date.parse("2026-09-27T00:00:00Z"), end: Date.parse("2026-09-27T00:01:00Z") }, { start: Date.parse("2026-09-27T00:00:20Z"), end: Date.parse("2026-09-27T00:01:20Z") }],
+  [],
+  [{ start: 2 ** 48 - 10, end: 2 ** 48 - 1 }],
+  [{ start: 0, end: 0 }],
+];
+
+for (const [lane, options] of [["generated", undefined], ["native", nativeLane()]] as const) {
+  test(`${lane} Bend deduplicates nested, touching and unsorted intervals at epoch precision`, () => {
+    const run = () => reconcileIntervals(mixed, options);
+    expect(lane === "generated" ? generated(run) : run()).toEqual([35, 80_000, 0, 9, 0]);
+  }, 90_000);
+
+  test(`${lane} reducer agrees with a seeded discrete-time coverage oracle`, () => {
+    let seed = 73;
+    const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
+    const groups = Array.from({ length: 50 }, () => Array.from({ length: 35 }, () => { const start = random() % 200; return { start, end: start + random() % 35 }; }));
+    const expected = groups.map(ivs => { const covered = new Set<number>(); for (const iv of ivs) for (let t = iv.start; t < iv.end; t++) covered.add(t); return covered.size; });
+    const run = () => reconcileIntervals(groups, options);
+    expect(lane === "generated" ? generated(run) : run()).toEqual(expected);
+  }, 90_000);
+
+  test(`${lane} union ignores interval order and duplicate rows`, () => {
+    const ivs = [{ start: 0, end: 10 }, { start: 5, end: 20 }, { start: 30, end: 40 }, { start: 5, end: 20 }];
+    const expected = 20 + 10;
+    const permutations = [ivs, [...ivs].reverse(), [ivs[1], ivs[3], ivs[0], ivs[2]]];
+    for (const rows of permutations) {
+      const run = () => reconcileIntervals([rows, [...rows, ...rows]], options);
+      expect(lane === "generated" ? generated(run) : run()).toEqual([expected, expected]);
+    }
+  }, 90_000);
+}
+
+test("generated policy rejects malformed transport instead of guessing", () => {
+  for (const input of ["0,20,10", "0,-1,20", "0,1,2,3", "secret,1,2", "0,1,281474976710656", "0,1.5,2"]) {
+    expect(evaluateIntervals(input)).toEqual({ $: "None" });
+  }
 });
 
-test("Bend rejects malformed transport and the bridge fails explicitly without a native executable", () => {
+test("native CLI rejects malformed transport and the bridge fails explicitly without a native executable", () => {
   const dir = mkdtempSync(join(tmpdir(), "worktime-bend-test-"));
   try {
     const file = join(dir, "input");
@@ -33,5 +69,58 @@ test("Bend rejects malformed transport and the bridge fails explicitly without a
     }
     expect(() => reconcileIntervals([[{ start: 0, end: 10 }]], { nativeExecutable: join(dir, "missing") })).toThrow("Bend reconciliation failed");
     expect(() => reconcileIntervals([[{ start: 0, end: 2 ** 48 }]])).toThrow("Invalid interval bounds");
+    expect(() => reconcileIntervals([[{ start: 0, end: 2 ** 48 }]], nativeLane())).toThrow("Invalid interval bounds");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Small fixtures hid a real failure: Base string/list helpers recurse per character or
+// row, so a year of epoch receipts overflowed the JS stack. Both lanes must now handle
+// the sizes a real ledger reaches, not just toy numbers.
+for (const [lane, options] of [["generated", undefined], ["native", nativeLane()]] as const) {
+  test(`${lane} reconciles 1,200 overlapping epoch receipts and 12,000 groups without stack growth`, () => {
+    const base = Date.parse("2026-01-01T00:00:00Z"), minute = 60_000;
+    let seed = 20_260_101;
+    const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
+    const intervals = Array.from({ length: 1200 }, () => { const start = base + (random() % 3600) * minute; return { start, end: start + (random() % 120) * minute }; });
+    const covered = new Set<number>();
+    for (const iv of intervals) for (let m = iv.start; m < iv.end; m += minute) covered.add(m);
+    const rows = [...intervals, ...intervals.slice(0, 300)];
+    const groups = Array.from({ length: 12_000 }, (_, i) => [{ start: base + i * 1000, end: base + i * 1000 + 3000 }]);
+    const run = () => {
+      const [union] = reconcileIntervals([rows], options);
+      const totals = reconcileIntervals(groups, options);
+      return { union, expected: covered.size * minute, count: totals.length, distinct: new Set(totals) };
+    };
+    const result = lane === "generated" ? generated(run) : run();
+    expect(result.union).toBe(result.expected);
+    expect(result.count).toBe(12_000);
+    expect([...result.distinct]).toEqual([3000]);
+  }, 90_000);
+
+  test(`${lane} audits 12,000 receipts without stack growth`, () => {
+    const base = Date.parse("2026-01-01T00:00:00Z"), scope = "scale-pi-turn", five = 5 * 60_000;
+    const at = (ms: number) => new Date(base + ms).toISOString();
+    const turns: TimeRecord[] = [], chunks: TurnChunk[] = [];
+    for (let i = 0; i < 12_000; i++) {
+      const start = i * 60_000;
+      turns.push({ version: 1, id: `t${i}`, startedAt: at(start), endedAt: at(start + five), observedMs: five, outcome: "settled", scope, intervalVersion: 2 });
+      chunks.push({ version: 2, turnId: `t${i}`, scope, start: at(start), end: at(start + five), ms: five, capped: false });
+    }
+    const run = () => { const audited = auditTurnReceipts(turns, chunks, options); return { size: audited.size, statuses: [...new Set([...audited.values()].map(a => a.status))] }; };
+    const result = lane === "generated" ? generated(run) : run();
+    expect(result.size).toBe(12_000);
+    expect(result.statuses).toEqual(["consistent"]);
+  }, 90_000);
+}
+
+test("the emitted policy parses a 12,000-row batch directly, without the adapter", () => {
+  const rows = Array.from({ length: 12_000 }, (_, i) => `0,${1_000_000 + i * 60_000},${1_000_000 + i * 60_000 + 180_000}`);
+  const union = generated(() => evaluateIntervals(rows.join("\n"))) as { $: string; value?: string };
+  expect(union.$).toBe("Some");
+  expect(union.value).toBe(`worktime-v1\n0,${(12_000 - 1) * 60_000 + 180_000}\n`);
+  const auditRows = Array.from({ length: 12_000 }, (_, i) => `${i},300000,1,1,300000,1,${i}`).join("\n");
+  const audited = generated(() => evaluateAudit(auditRows)) as { $: string; value?: string };
+  expect(audited.$).toBe("Some");
+  expect(audited.value!.trimEnd().split("\n")).toHaveLength(12_001);
+  expect(audited.value!.trimEnd().split("\n").at(-1)).toBe("11999,0,300000,1");
 });
