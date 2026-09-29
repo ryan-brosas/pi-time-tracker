@@ -439,13 +439,32 @@ read-only permissions and SHA-pinned Actions. Direct pushes to `main` are allowe
 CI reports the `quality` check after each push. [Dependabot](.github/dependabot.yml)
 proposes weekly Action-pin updates; it does not merge them.
 
-The [npm release workflow](.github/workflows/npm-publish.yml) is manual and runs
-only from `main`. It rejects an already-published version, reruns these gates,
-and publishes the packed artifact with OIDC provenance. It requires the npm
-package's trusted publisher to name `ryan-brosas/pi-time-tracker` and
-`npm-publish.yml`, with no environment. Never add a registry token to GitHub
-Actions. npm's first-package bootstrap must be completed before this publisher
-can be configured; a Git push alone does not publish to npm.
+### Publishing a release
+
+The [release workflow](.github/workflows/npm-publish.yml) is manual and runs only
+from `main`. To release a version:
+
+1. Bump `version` in `package.json` in a reviewed change and merge it to `main`.
+   Already-published npm versions are immutable; the workflow rejects duplicates.
+2. Run **Publish npm and GitHub release** from GitHub Actions, selecting `main`, or:
+   `gh workflow run npm-publish.yml --repo ryan-brosas/pi-time-tracker --ref main`.
+3. The workflow reruns the gates, packs once, tests that tarball without a compiler,
+   and publishes it to npm with OIDC provenance. Only after npm succeeds does a
+   separate job create `v<version>` at the tested commit and attach the same tarball
+   to a [GitHub release](https://github.com/ryan-brosas/pi-time-tracker/releases).
+   Generated notes use the categories in [.github/release.yml](.github/release.yml).
+
+Stable versions use npm's `latest` tag and GitHub's Latest release. Versions with a
+prerelease suffix use npm's `next` tag and a GitHub prerelease, not Latest. The npm
+trusted publisher must name `ryan-brosas/pi-time-tracker` and `npm-publish.yml`,
+with no environment. Never add a registry token to GitHub Actions. A Git push or
+merge alone does not publish anything.
+
+If npm succeeds but the GitHub release job fails, use **Re-run failed jobs** while
+the verified artifact is retained (seven days). Do not rerun all jobs or republish
+the npm version. Existing tags pointing to another commit and existing releases
+are never overwritten; inspect and finish any partially created draft release
+before retrying. npm publishing and GitHub release creation are not atomic.
 
 The [CI installer](scripts/install-bend-ci.sh) verifies the SHA-256 of an exact
 official Bend release and of the matching compiler source, then installs both into

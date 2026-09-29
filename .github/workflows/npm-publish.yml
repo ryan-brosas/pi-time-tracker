@@ -1,4 +1,4 @@
-name: Publish npm
+name: Publish npm and GitHub release
 
 on:
   workflow_dispatch:
@@ -15,6 +15,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+      artifact-id: ${{ steps.archive.outputs.artifact-id }}
     permissions:
       contents: read
       id-token: write
@@ -65,11 +69,56 @@ jobs:
         run: bun run test
       - name: Validate Pi package payload
         run: bun run pack:check
-      - name: Verify the packaged artifact without a compiler
-        run: bun run pack:test
-      - name: Pack verified artifact and publish via npm OIDC
+      - name: Pack the release artifact once
+        id: pack
         run: |
           version=$(node -p "require('./package.json').version")
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tarball=pi-time-tracker-$version.tgz" >> "$GITHUB_OUTPUT"
+      - name: Verify the release artifact without a compiler
+        env:
+          TARBALL: ${{ runner.temp }}/${{ steps.pack.outputs.tarball }}
+        run: bun run pack:test "$TARBALL"
+      - name: Retain the verified artifact for the release job
+        id: archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Publish the verified artifact via npm OIDC
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          RELEASE_VERSION: ${{ steps.pack.outputs.version }}
+        run: |
+          dist_tag=latest
+          if [[ "$RELEASE_VERSION" == *-* ]]; then dist_tag=next; fi
           cd "$RUNNER_TEMP"
-          npm publish "./pi-time-tracker-$version.tgz" --provenance --access public --ignore-scripts
+          npm publish "./$TARBALL" --tag "$dist_tag" --provenance --access public --ignore-scripts
+
+  release:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.publish.outputs.artifact-id }}
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Create the GitHub release and attach the published package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_TARBALL: ${{ runner.temp }}/release/${{ needs.publish.outputs.tarball }}
+        run: bash scripts/github-release.sh

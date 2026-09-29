@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
-// Packs the real npm artifact, then runs the packaged accounting policy and
+// Tests a supplied npm tarball (or packs one), then runs the accounting policy and
 // report pipeline with no Bend, Clang or Bun reachable. This is the install
 // claim, so it tests the tarball rather than the working tree.
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -29,15 +29,22 @@ const atLeast = (a, b) => {
 };
 check(atLeast(nodeVersion, floor), `Node ${floor}+ is required by package.json engines, found ${nodeVersion || "none"}`);
 
+if (process.argv.length > 3) throw new Error("Usage: bun run pack:test [tarball.tgz]");
+let tarball = process.argv[2] ? resolve(process.argv[2]) : null;
+if (tarball && !existsSync(tarball)) throw new Error(`supplied tarball does not exist: ${tarball}`);
 const workspace = mkdtempSync(join(tmpdir(), "pi-worktime-pack-"));
 try {
-  const packed = run(["npm", "pack", "--ignore-scripts", "--pack-destination", workspace], { cwd: root });
-  check(packed.exitCode === 0, `npm pack failed: ${text(packed).slice(-600)}`);
-  const tarball = readdirSync(workspace).find((name) => name.endsWith(".tgz"));
-  check(tarball !== undefined, "npm pack produced no tarball");
-  if (tarball === undefined || packed.exitCode !== 0) throw new Error(failures.join("; "));
-  check(run(["tar", "-xzf", join(workspace, tarball), "-C", workspace]).exitCode === 0, "could not extract the packed tarball");
+  if (!tarball) {
+    const packed = run(["npm", "pack", "--ignore-scripts", "--pack-destination", workspace], { cwd: root });
+    if (packed.exitCode !== 0) throw new Error(`npm pack failed: ${text(packed).slice(-600)}`);
+    const filename = readdirSync(workspace).find((name) => name.endsWith(".tgz"));
+    if (!filename) throw new Error("npm pack produced no tarball");
+    tarball = join(workspace, filename);
+  }
+  if (run(["tar", "-xzf", tarball, "-C", workspace]).exitCode !== 0) throw new Error("could not extract the packed tarball");
   const pkg = join(workspace, "package");
+  const shippedManifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+  check(shippedManifest.name === manifest.name && shippedManifest.version === manifest.version, "the tarball name/version differs from package.json");
 
   const shipped = readdirSync(join(pkg, "generated"));
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
