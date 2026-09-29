@@ -12,6 +12,7 @@ _Keep local work receipts, reconcile overlapping activity, and review the hours.
 </p>
 
 [![checks][checks-badge]][checks]
+[![npm version][npm-badge]][npm]
 [![Pi extension][pi-badge]](index.ts)
 [![Bun 1.4.0][bun-badge]](.github/workflows/ci.yml)
 [![License: MIT][license-badge]](LICENSE)
@@ -104,35 +105,39 @@ CI tests Linux x64 with Bun 1.4.0, Node 22.19.0, Bend 2.0.31 and Clang 19. Bend
 2.0.7 has also passed the suite locally; installation layouts differ between those
 releases.
 
-### Install the command
+### Install the extension
 
-The `/work` commands come from this Pi extension, not a standalone application.
-Prepare a checkout using [Run from source](#run-from-source), then run this from
-**the project you want to track**:
+Use `pi install` to install and register the extension with Pi. A plain
+`npm install pi-time-tracker` does not register it with Pi; this is not a
+standalone CLI.
 
-```sh
-pi install /absolute/path/to/pi-time-tracker --local
-```
+Choose **one** source and run its command from **the project you want to track**:
 
-Replace the path with your checkout location. Alternatively, without cloning,
-install the Git-hosted Pi package from the workspace you want to track:
+**From Git (recommended; compiler-free)**
 
 ```sh
 pi install git:github.com/ryan-brosas/pi-time-tracker --local
 ```
 
-For a reproducible Git install, append `@<commit-sha>` to the source. The
-[published npm package](https://www.npmjs.com/package/pi-time-tracker) can also be
-installed without cloning:
+For a reproducible Git install, append `@<commit-sha>` to the source.
+
+**From [npm][npm]**
 
 ```sh
 pi install npm:pi-time-tracker@0.1.0 --local
 ```
 
-> `0.1.0` predates the generated policy and still compiles Bend on first use, so it
-> needs Bend and Clang. The Git/source default is compiler-free. This npm example
-> and caveat must be updated or removed in the same reviewed change that bumps the
-> package version, before publishing a version that includes the generated policy.
+> The published `0.1.0` release still needs Bend and Clang on first use. Use Git
+> for the compiler-free version until a new npm release includes it.
+
+**From a local checkout**
+
+Prepare a checkout using [Run from source](#run-from-source), then replace the
+path below with its location:
+
+```sh
+pi install /absolute/path/to/pi-time-tracker --local
+```
 
 Approve project trust yourself and use `/reload` at an idle boundary. Load the package
 only once: use its default entry point or a project-specific adapter, never both.
@@ -402,6 +407,7 @@ power-loss guarantees. Review the report before using it in a timesheet or invoi
 - [Native transport and cache](native.ts)
 - [Draft label registry](labels.ts)
 - [CI workflow](.github/workflows/ci.yml)
+- [Project agent guidance](AGENTS.md)
 - [Security and private vulnerability reporting](SECURITY.md)
 - [Report a bug][issues]
 
@@ -549,6 +555,8 @@ Powered by [Coral Bricks](https://coralbricks.ai).
 
 [checks-badge]: https://img.shields.io/github/actions/workflow/status/ryan-brosas/pi-time-tracker/ci.yml?branch=main&style=for-the-badge&label=checks
 [checks]: https://github.com/ryan-brosas/pi-time-tracker/actions/workflows/ci.yml
+[npm-badge]: https://img.shields.io/npm/v/pi-time-tracker?style=for-the-badge&logo=npm
+[npm]: https://www.npmjs.com/package/pi-time-tracker
 [pi-badge]: https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge
 [bun-badge]: https://img.shields.io/badge/Bun-1.4.0-339933?style=for-the-badge&logo=bun&logoColor=white
 [license-badge]: https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge
