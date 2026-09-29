@@ -45,6 +45,14 @@ def row_update(got: Maybe<&2, Row>, state: Bool & List<&2, Row>) -> Bool & List<
       (+failed, out) = state
       (failed, row <> out)
 
+# Match a direct parameter before evaluating any fields after a failure.
+def parse_step(failed: Bool, line: String, out: List<&2, Row>) -> Bool & List<&2, Row>:
+  match failed:
+    case True{}:
+      (True{}, out)
+    case False{}:
+      row_update(parse_row(Batch.split(line, ',')), (False{}, out))
+
 def parse_done(failed: Bool, out: List<&2, Row>) -> Maybe<&2, List<&2, Row>>:
   match failed:
     case True{}:
@@ -60,7 +68,8 @@ def parse(lines: List<&2, String>, state: Bool & List<&2, Row>) -> Maybe<&2, Lis
     case SNil{} <> tail:
       parse(tail, state)
     case line <> tail:
-      parse(tail, row_update(parse_row(Batch.split(line, ',')), state))
+      (+failed, out) = state
+      parse(tail, parse_step(failed, line, out))
 
 def group(row: Row) -> Nat:
   match row:
@@ -152,7 +161,7 @@ def render(rows: List<&2, Row>) -> String:
 # Complete pure boundary; render alone requires already-sorted rows.
 def evaluate(text: String) -> Maybe<&2, String>:
   do Maybe<&2, String>:
-    rows : List<&2, Row> <- parse(Batch.split(Batch.strip_cr(text), '\n'), (False{}, Nil{}))
+    rows : List<&2, Row> <- parse(Batch.split(Batch.normalize_crlf(text), '\n'), (False{}, Nil{}))
     return render(Batch.sort(~Row, ~row_le, rows))
 
 def reconcile(result: Maybe<&2, String>) -> IO(Unit):

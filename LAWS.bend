@@ -1,4 +1,7 @@
 # Receipt classification requirements, not a proof of host IO or interval union.
+# Proof-gated: conflict precedence, absent-summary checkpoint, zero-interval
+# legacy/missing, and equal-total coverage. status(row, False{}), present-summary
+# routing and unequal-total mismatch are covered by tests, not by these laws.
 import Base
 import ./audit.bend as Audit
 

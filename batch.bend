@@ -10,25 +10,19 @@ def reverse_text(text: String, out: String) -> String:
     case SCon{h, t}:
       reverse_text(t, SCon{h, out})
 
-# CRLF logs arrive as lines ending in one CR; dropping CR once from the whole text
-# keeps every downstream field parse unchanged. A match may not scrutinize a
-# computed value, so each decision lives in a def whose scrutinee is a parameter.
-def push_char(is_cr: Bool, c: Char, out: String) -> String:
-  match is_cr:
-    case True{}:
-      out
-    case False{}:
-      SCon{c, out}
-
-def strip_cr_rev(text: String, out: String) -> String:
+# Normalize only CRLF pairs. A stray CR remains invalid numeric input; dropping
+# every CR would silently turn a malformed field such as 1\r0 into 10.
+def normalize_crlf_rev(text: String, out: String) -> String:
   match text:
     case SNil{}:
       out
-    case SCon{+h, t}:
-      strip_cr_rev(t, push_char(Char.is_eq(h, '\r'), h, out))
+    case SCon{'\r', SCon{'\n', t}}:
+      normalize_crlf_rev(t, SCon{'\n', out})
+    case SCon{h, t}:
+      normalize_crlf_rev(t, SCon{h, out})
 
-def strip_cr(text: String) -> String:
-  reverse_text(strip_cr_rev(text, ""), "")
+def normalize_crlf(text: String) -> String:
+  reverse_text(normalize_crlf_rev(text, ""), "")
 
 def split_step(c: Char, current: String, out: List<&2, String>, cut: Bool) -> String & List<&2, String>:
   match cut:
@@ -49,14 +43,14 @@ def split_go(text: String, +sep: Char, state: String & List<&2, String>) -> List
 def split(text: String, sep: Char) -> List<&2, String>:
   split_go(text, sep, ("", Nil{}))
 
-# Renderers accumulate rows in reverse order. Prepending each short row avoids
-# recursion proportional to output length and repeated native prefix copies.
+# Renderers accumulate rows in reverse order. Reverse twice to prepend a row
+# with constant stack depth, without assuming that each row is short.
 def concat_reversed(rows: List<&2, String>, out: String) -> String:
   match rows:
     case Nil{}:
       out
     case h <> t:
-      concat_reversed(t, h ++ out)
+      concat_reversed(t, reverse_text(reverse_text(h, ""), out))
 
 def runs(-A: Data, xs: List<&2, A>, n: Nat, out: List<&2, List<&2, A>>) -> Nat & List<&2, List<&2, A>>:
   match xs:

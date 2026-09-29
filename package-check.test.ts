@@ -20,6 +20,8 @@ test.each([
   ["shipped-test", 1, "test file must not ship"],
   ["mjs-import", 1, "generated/policy.mjs imports ./helper, which the payload does not ship"],
   ["missing-import", 1, "imports ./missing.ts, which the payload does not ship"],
+  ["bend-import", 1, "imports ./missing.bend, which the payload does not ship"],
+  ["bend-import-parent", 1, "imports ../missing.bend, which the payload does not ship"],
 ] as const)("package gate: %s", (scenario, status, message) => {
   const root = mkdtempSync(join(tmpdir(), "pi-package-check-"));
   try {
@@ -36,7 +38,8 @@ test.each([
     const manifest = { private: scenario === "private", license: "MIT", files, pi: { extensions: [scenario === "excluded-entry" ? "./scripts/adapter.ts" : "./index.ts"] } };
     writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(root, "index.ts"), scenario === "missing-import" ? 'import { value } from "./missing.ts";\n' : "");
-    writeFileSync(join(root, "engine.bend"), "import ./batch.bend as Batch\n");
+    const bendImport = scenario === "bend-import" ? "./missing.bend" : scenario === "bend-import-parent" ? "../missing.bend" : "./batch.bend";
+    writeFileSync(join(root, "engine.bend"), `import ${bendImport} as Batch\n`);
     for (const file of ["audit.bend", "LAWS.bend"]) writeFileSync(join(root, file), "");
     if (scenario !== "missing-batch") writeFileSync(join(root, "batch.bend"), "");
     writeFileSync(join(root, "generated", "policy.mjs"), scenario === "mjs-import" ? 'import helper from "./helper";\n' : "");

@@ -82,7 +82,7 @@ for (const [lane, makeOptions] of [["generated", () => undefined], ["native", na
   }, 90_000);
 }
 
-const malformedIntervals = ["0,20,10", "0,-1,20", "0,1,2,3", "secret,1,2", "0,1,281474976710656", "0,1.5,2"];
+const malformedIntervals = ["0,20,10", "0,-1,20", "0,1,2,3", "secret,1,2", "0,1,281474976710656", "0,1.5,2", "0,1\r0,20", "0,1,2\r0"];
 
 test("generated policy rejects malformed transport instead of guessing", () => {
   for (const input of malformedIntervals) {
@@ -91,9 +91,16 @@ test("generated policy rejects malformed transport instead of guessing", () => {
 });
 
 test("generated policy rejects malformed receipt audit transport", () => {
-  for (const input of ["0,1,2", "x,1,1,1,1,1,0", "0,0,0,2,0,0,0", "0,0,0,1,0,2,0", "0,0,0,1,0.5,1,0"]) {
+  for (const input of ["0,1,2", "x,1,1,1,1,1,0", "0,0,0,2,0,0,0", "0,0,0,1,0,2,0", "0,0,0,1,0.5,1,0", "0,1\r0,1,1,10,1,0"]) {
     expect(evaluateAudit(input)).toEqual({ $: "None" });
   }
+});
+
+test("generated parsers skip field parsing after the first failure", () => {
+  // Parsing this later field would overflow Base's recursive String.length.
+  const oversized = "9".repeat(100_000);
+  expect(evaluateIntervals(`invalid\n0,0,${oversized}`)).toEqual({ $: "None" });
+  expect(evaluateAudit(`invalid\n0,${oversized},1,1,1,1,0`)).toEqual({ $: "None" });
 });
 
 test("generated policies accept CRLF rows", () => {

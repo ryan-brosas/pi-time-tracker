@@ -36,6 +36,14 @@ def span_update(got: Maybe<&2, Span>, state: Bool & List<&2, Span>) -> Bool & Li
       (+failed, out) = state
       (failed, span <> out)
 
+# Match a direct parameter before evaluating any fields after a failure.
+def parse_step(failed: Bool, line: String, out: List<&2, Span>) -> Bool & List<&2, Span>:
+  match failed:
+    case True{}:
+      (True{}, out)
+    case False{}:
+      span_update(parse_fields(Batch.split(line, ',')), (False{}, out))
+
 # Bend 2.0.7 rejects a match on a binder captured from a destructured parameter,
 # so the final decision lives in its own def and the fold only forwards the state.
 def parse_done(failed: Bool, out: List<&2, Span>) -> Maybe<&2, List<&2, Span>>:
@@ -53,7 +61,8 @@ def parse_lines(lines: List<&2, String>, state: Bool & List<&2, Span>) -> Maybe<
     case SNil{} <> rest:
       parse_lines(rest, state)
     case line <> rest:
-      parse_lines(rest, span_update(parse_fields(Batch.split(line, ',')), state))
+      (+failed, out) = state
+      parse_lines(rest, parse_step(failed, line, out))
 
 
 def span_le(a: Span, b: Span) -> Bool:
@@ -120,7 +129,7 @@ def render(spans: List<&2, Span>) -> String:
 # Keep validation, ordering and union here, not in host-language callers.
 def evaluate(text: String) -> Maybe<&2, String>:
   do Maybe<&2, String>:
-    spans : List<&2, Span> <- parse_lines(Batch.split(Batch.strip_cr(text), '\n'), (False{}, Nil{}))
+    spans : List<&2, Span> <- parse_lines(Batch.split(Batch.normalize_crlf(text), '\n'), (False{}, Nil{}))
     return render(merge_all(Batch.sort(~Span, ~span_le, spans), Nil{}))
 
 def reconcile(result: Maybe<&2, String>) -> IO(Unit):

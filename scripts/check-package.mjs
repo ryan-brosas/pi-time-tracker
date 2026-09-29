@@ -70,7 +70,7 @@ for (const file of runtime) {
 // Policy modules import each other; a missing helper breaks both lanes at runtime.
 for (const file of [...shipped].filter(f => f.endsWith(".bend"))) {
   const source = readFileSync(join(root, file), "utf8");
-  for (const [, specifier] of source.matchAll(/^import\s+\.\/([^\s]+)\s+as\s+/gm)) {
+  for (const [, specifier] of source.matchAll(/^import\s+(\.{1,2}\/[^\s]+)\s+as\s+/gm)) {
     const resolved = normalize(join(dirname(file), specifier));
     if (!shipped.has(resolved)) fail(`${file} imports ${specifier}, which the payload does not ship`);
   }
