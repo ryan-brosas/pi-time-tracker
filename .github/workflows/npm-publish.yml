@@ -20,7 +20,6 @@ jobs:
       id-token: write
     env:
       BEND_NO_TELEMETRY: "1"
-      BEND_SOURCE_DIR: ${{ runner.temp }}/bend/source
       CC: clang-19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +50,9 @@ jobs:
         run: |
           bash scripts/install-bend-ci.sh "$RUNNER_TEMP/bend"
           echo "$RUNNER_TEMP/bend/bin" >> "$GITHUB_PATH"
+          # The runner context is unavailable in job-level env, and the build and
+          # proof steps need the pinned compiler source beside the binary.
+          echo "BEND_SOURCE_DIR=$RUNNER_TEMP/bend/source" >> "$GITHUB_ENV"
       - name: Install locked dependencies
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Reject a stale generated Bend policy
