@@ -18,6 +18,10 @@ _Track client work across projects, keep records local, and review your hours._
 
 </div>
 
+Built for working across client repos in Pi without remembering to start and
+stop a timer. Open Pi in a project's folder and work as usual; the tracker
+associates activity with that workspace so you can review your hours later.
+
 ## Run
 
 After [installing](#install), tracking starts automatically. In Pi:
@@ -42,7 +46,16 @@ before using them in a timesheet or invoice.
 ## How it fits
 
 Pi activity → local SQLite and receipts → Markdown reports.
-See the [architecture and development guide][development] for details.
+
+The extension observes activity inside Pi, including prompts, agent turns and
+tool events. It joins nearby activity into inferred work windows; long idle gaps
+stay Unknown. Leaving a session open does not turn its whole lifetime into work,
+and activity outside Pi is not observed.
+
+Records stay on your machine, with no database server to set up. Workspace
+reports keep inferred work windows, measured agent activity and the optional
+manual session clock separate — they are different views, not hours to add
+together. See the [architecture and development guide][development] for details.
 
 ## Install
 
@@ -58,13 +71,18 @@ remove the previous install first rather than loading both.
 
 ## Usage
 
-Optional labels and reports across projects:
+The folder name is the default client label. Set a name once and future sessions
+in that workspace inherit it; task labels apply to the current session:
 
 ```text
 /project set Coral   # optional client name; defaults to the folder name
 /project task docs   # optional task for this session
 /project report all  # report across tracked workspaces
 ```
+
+Use `/project status` to check the current workspace, task and tracking settings.
+The `all` report covers inferred work windows across your tracked projects;
+manual session clocks and agent receipts stay in their workspace reports.
 
 ## Documentation
 
