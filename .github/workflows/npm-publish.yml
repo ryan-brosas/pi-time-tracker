@@ -73,9 +73,13 @@ jobs:
         id: pack
         run: |
           version=$(node -p "require('./package.json').version")
-          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          # Read the filename npm actually wrote; a rename or scope change must not leave
+          # the artifact and every downstream reference pointing at a missing file.
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --json > "$RUNNER_TEMP/npm-pack.json"
+          tarball=$(node -p "require(process.env.RUNNER_TEMP + '/npm-pack.json')[0].filename")
+          test -f "$RUNNER_TEMP/$tarball"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tarball=pi-time-tracker-$version.tgz" >> "$GITHUB_OUTPUT"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
       - name: Verify the release artifact without a compiler
         env:
           TARBALL: ${{ runner.temp }}/${{ steps.pack.outputs.tarball }}

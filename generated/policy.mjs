@@ -156,6 +156,33 @@ function $batch$reverse_text$($0, $1) {
     }
   }
 }
+function $batch$push_char$(_is_cr_0, _c_0, _out_0) {
+  if (_is_cr_0) {
+    return _out_0;
+  } else {
+    return _c_0 + _out_0;
+  }
+}
+function $batch$strip_cr_rev$($0, $1) {
+  for (;; ) {
+    {
+      const _text_0 = $0;
+      const _out_0 = $1;
+      if (_text_0 === "") {
+        return _out_0;
+      } else {
+        const _h_0 = _text_0.codePointAt(0) > 65535 ? _text_0.slice(0, 2) : _text_0[0];
+        const _t_0 = _text_0.codePointAt(0) > 65535 ? _text_0.slice(2) : _text_0.slice(1);
+        $0 = _t_0;
+        $1 = $batch$push_char$($Char$is_eq$(_h_0, "\r"), _h_0, _out_0);
+        continue;
+      }
+    }
+  }
+}
+function $batch$strip_cr$(_text_0) {
+  return $batch$reverse_text$($batch$strip_cr_rev$(_text_0, ""), "");
+}
 function $batch$split_step$(_c_0, _current_0, _out_0, _cut_0) {
   if (_cut_0) {
     return { $: "Tuple", fst: "", snd: { $: "Con", head: $batch$reverse_text$(_current_0, ""), tail: _out_0 } };
@@ -491,7 +518,7 @@ function $audit$render$(_rows_0) {
   }
 }
 function $audit$evaluate$(_text_0) {
-  return $Maybe$bind$($audit$parse$($batch$split$(_text_0, `
+  return $Maybe$bind$($audit$parse$($batch$split$($batch$strip_cr$(_text_0), `
 `), { $: "Tuple", fst: false, snd: { $: "Nil" } }), run_clo((_x_0) => {
     return $Maybe$pure$($audit$render$($batch$sort$1260$(_x_0)));
   }));
@@ -711,7 +738,7 @@ function $render$(_spans_0) {
   }
 }
 function $evaluate$(_text_0) {
-  return $Maybe$bind$($parse_lines$($batch$split$(_text_0, `
+  return $Maybe$bind$($parse_lines$($batch$split$($batch$strip_cr$(_text_0), `
 `), { $: "Tuple", fst: false, snd: { $: "Nil" } }), run_clo((_x_0) => {
     return $Maybe$pure$($render$($merge_all$($batch$sort$1261$(_x_0), { $: "Nil" })));
   }));
@@ -799,13 +826,13 @@ function $run$(_args_0) {
     });
   }
 }
-function $List$reverse$(_xs_0) {
-  return $List$reverse$go$(_xs_0, { $: "Nil" });
-}
 function $Char$is_eq$(_a_0, _b_0) {
   const _x_0 = _a_0.codePointAt(0);
   const _y_0 = _b_0.codePointAt(0);
   return _x_0 === _y_0;
+}
+function $List$reverse$(_xs_0) {
+  return $List$reverse$go$(_xs_0, { $: "Nil" });
 }
 function $List$reverse$go$($0, $1) {
   for (;; ) {
@@ -1792,6 +1819,18 @@ var engine_default = {
     const r = run_loop($batch$reverse_text$(a0, a1));
     return r;
   }, 2),
+  "batch.push_char": run_lib((a0, a1, a2) => {
+    const r = run_loop($batch$push_char$(a0, a1, a2));
+    return r;
+  }, 3),
+  "batch.strip_cr_rev": run_lib((a0, a1) => {
+    const r = run_loop($batch$strip_cr_rev$(a0, a1));
+    return r;
+  }, 2),
+  "batch.strip_cr": run_lib((a0) => {
+    const r = run_loop($batch$strip_cr$(a0));
+    return r;
+  }, 1),
   "batch.split_step": run_lib((a0, a1, a2, a3) => {
     const r = run_loop($batch$split_step$(a0, a1, a2, a3));
     return r;
@@ -2148,6 +2187,33 @@ function $batch$reverse_text$2($0, $1) {
     }
   }
 }
+function $batch$push_char$2(_is_cr_0, _c_0, _out_0) {
+  if (_is_cr_0) {
+    return _out_0;
+  } else {
+    return _c_0 + _out_0;
+  }
+}
+function $batch$strip_cr_rev$2($0, $1) {
+  for (;; ) {
+    {
+      const _text_0 = $0;
+      const _out_0 = $1;
+      if (_text_0 === "") {
+        return _out_0;
+      } else {
+        const _h_0 = _text_0.codePointAt(0) > 65535 ? _text_0.slice(0, 2) : _text_0[0];
+        const _t_0 = _text_0.codePointAt(0) > 65535 ? _text_0.slice(2) : _text_0.slice(1);
+        $0 = _t_0;
+        $1 = $batch$push_char$2($Char$is_eq$2(_h_0, "\r"), _h_0, _out_0);
+        continue;
+      }
+    }
+  }
+}
+function $batch$strip_cr$2(_text_0) {
+  return $batch$reverse_text$2($batch$strip_cr_rev$2(_text_0, ""), "");
+}
 function $batch$split_step$2(_c_0, _current_0, _out_0, _cut_0) {
   if (_cut_0) {
     return { $: "Tuple", fst: "", snd: { $: "Con", head: $batch$reverse_text$2(_current_0, ""), tail: _out_0 } };
@@ -2483,7 +2549,7 @@ function $render$2(_rows_0) {
   }
 }
 function $evaluate$2(_text_0) {
-  return $Maybe$bind$2($parse$($batch$split$2(_text_0, `
+  return $Maybe$bind$2($parse$($batch$split$2($batch$strip_cr$2(_text_0), `
 `), { $: "Tuple", fst: false, snd: { $: "Nil" } }), run_clo2((_x_0) => {
     return $Maybe$pure$2($render$2($batch$sort$1260$2(_x_0)));
   }));
@@ -2501,13 +2567,13 @@ function $reconcile$2(_result_0) {
 function $run$2(_text_0) {
   return $reconcile$2(run_loop2($evaluate$2(_text_0)));
 }
-function $List$reverse$2(_xs_0) {
-  return $List$reverse$go$2(_xs_0, { $: "Nil" });
-}
 function $Char$is_eq$2(_a_0, _b_0) {
   const _x_0 = _a_0.codePointAt(0);
   const _y_0 = _b_0.codePointAt(0);
   return _x_0 === _y_0;
+}
+function $List$reverse$2(_xs_0) {
+  return $List$reverse$go$2(_xs_0, { $: "Nil" });
 }
 function $List$reverse$go$2($0, $1) {
   for (;; ) {
@@ -3126,6 +3192,18 @@ var audit_default = {
     const r = run_loop2($batch$reverse_text$2(a0, a1));
     return r;
   }, 2),
+  "batch.push_char": run_lib2((a0, a1, a2) => {
+    const r = run_loop2($batch$push_char$2(a0, a1, a2));
+    return r;
+  }, 3),
+  "batch.strip_cr_rev": run_lib2((a0, a1) => {
+    const r = run_loop2($batch$strip_cr_rev$2(a0, a1));
+    return r;
+  }, 2),
+  "batch.strip_cr": run_lib2((a0) => {
+    const r = run_loop2($batch$strip_cr$2(a0));
+    return r;
+  }, 1),
   "batch.split_step": run_lib2((a0, a1, a2, a3) => {
     const r = run_loop2($batch$split_step$2(a0, a1, a2, a3));
     return r;
@@ -3275,6 +3353,9 @@ var audit_default = {
 // bend-entry.ts
 var engine = engine_default;
 var audit = audit_default;
+if (typeof engine.evaluate !== "function" || typeof audit.evaluate !== "function") {
+  throw new Error("Bend modules must expose evaluate(text)");
+}
 var evaluateIntervals = (text) => engine.evaluate(text);
 var evaluateAudit = (text) => audit.evaluate(text);
 export {

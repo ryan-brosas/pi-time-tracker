@@ -51,18 +51,19 @@ for (const file of shipped) {
   if (file.startsWith("scripts/")) fail(`build tooling must not ship: ${file}`);
   if (file.startsWith(".github/")) fail(`repository automation must not ship: ${file}`);
   if (file === "bun.lock" || file.startsWith("tsconfig")) fail(`development-only file must not ship: ${file}`);
-  if (!/\.(ts|bend|mjs|mts|json|md)$/.test(file)) fail(`unexpected file type in payload: ${file}`);
+  if (!/\.(ts|bend|mjs|d\.mts|json|md)$/.test(file)) fail(`unexpected file type in payload: ${file}`);
 }
 
 // Every local import inside shipped runtime files must itself be shipped, or Pi fails to load the package.
-const runtime = [...shipped].filter(f => f.endsWith(".ts") || f.endsWith(".mjs"));
+const runtime = [...shipped].filter(f => (f.endsWith(".ts") && !f.endsWith(".d.ts") && !f.endsWith(".d.mts")) || f.endsWith(".mjs"));
 for (const file of runtime) {
   const source = readFileSync(join(root, file), "utf8");
   for (const [, specifier] of source.matchAll(/from\s+"(\.\/[^"]+)"/g)) {
     const resolved = normalize(join(dirname(file), specifier));
-    if (!shipped.has(resolved) && !shipped.has(`${resolved}.ts`) && !shipped.has(`${resolved}/index.ts`)) {
-      fail(`${file} imports ${specifier}, which the payload does not ship`);
-    }
+    // TypeScript resolution may drop an extension it can add back; Node ESM cannot,
+    // so a .mjs import must name a file that actually ships.
+    const found = shipped.has(resolved) || (file.endsWith(".ts") && (shipped.has(`${resolved}.ts`) || shipped.has(`${resolved}/index.ts`)));
+    if (!found) fail(`${file} imports ${specifier}, which the payload does not ship`);
   }
 }
 
@@ -80,4 +81,4 @@ if (failures.length) {
   for (const message of failures) console.error(` - ${message}`);
   process.exit(1);
 }
-console.log(`Package payload OK: ${[...shipped].sort().length} files, entries ${(entries ?? []).join(", ")}`);
+console.log(`Package payload OK: ${shipped.size} files, entries ${(entries ?? []).join(", ")}`);

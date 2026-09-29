@@ -10,6 +10,26 @@ def reverse_text(text: String, out: String) -> String:
     case SCon{h, t}:
       reverse_text(t, SCon{h, out})
 
+# CRLF logs arrive as lines ending in one CR; dropping CR once from the whole text
+# keeps every downstream field parse unchanged. A match may not scrutinize a
+# computed value, so each decision lives in a def whose scrutinee is a parameter.
+def push_char(is_cr: Bool, c: Char, out: String) -> String:
+  match is_cr:
+    case True{}:
+      out
+    case False{}:
+      SCon{c, out}
+
+def strip_cr_rev(text: String, out: String) -> String:
+  match text:
+    case SNil{}:
+      out
+    case SCon{+h, t}:
+      strip_cr_rev(t, push_char(Char.is_eq(h, '\r'), h, out))
+
+def strip_cr(text: String) -> String:
+  reverse_text(strip_cr_rev(text, ""), "")
+
 def split_step(c: Char, current: String, out: List<&2, String>, cut: Bool) -> String & List<&2, String>:
   match cut:
     case True{}:
@@ -61,6 +81,7 @@ def flatten(-A: Data, rows: List<&2, List<&2, A>>, out: List<&2, A>) -> List<&2,
     case h <> t:
       flatten(A, t, List.reverse.go(&2, A, h, out))
 
+# Invariant: fuel must equal the initial run count n; each pass halves the runs.
 def sort_go(~A: Data, ~le: A -> A -> Bool, fuel: Nat, +n: Nat, rows: List<&2, List<&2, A>>) -> List<&2, A>:
   match fuel:
     case 0n:

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,15 +72,16 @@ test("unsupported interval markers and fractional milliseconds are rejected, not
 test("changing an imported Bend policy module invalidates the compiled engine cache", async () => {
   const dir = mkdtempSync(join(tmpdir(), "worktime-audit-cache-"));
   try {
-    for (const file of ["native.ts", "engine.bend", "audit.bend", "batch.bend"]) copyFileSync(join(import.meta.dir, file), join(dir, file));
-    // The adapter imports the generated policy, so the fixture needs it too.
-    mkdirSync(join(dir, "generated"));
-    copyFileSync(join(import.meta.dir, "generated", "policy.mjs"), join(dir, "generated", "policy.mjs"));
+    copyFileSync(join(import.meta.dir, "native.ts"), join(dir, "native.ts"));
+    for (const file of readdirSync(import.meta.dir).filter(file => file.endsWith(".bend"))) copyFileSync(join(import.meta.dir, file), join(dir, file));
     const cloned = await import(join(dir, "native.ts"));
     const options = { cacheDir: join(dir, "cache") };
-    const first = cloned.nativeExecutable(options);
-    appendFileSync(join(dir, "audit.bend"), "\n# cache invalidation regression\n");
-    const second = cloned.nativeExecutable(options);
-    expect(second).not.toBe(first);
+    let previous = cloned.nativeExecutable(options);
+    for (const file of ["audit.bend", "batch.bend"]) {
+      appendFileSync(join(dir, file), `\n# cache invalidation regression ${file}\n`);
+      const next = cloned.nativeExecutable(options);
+      expect(next).not.toBe(previous);
+      previous = next;
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 60000);

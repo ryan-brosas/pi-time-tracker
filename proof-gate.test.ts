@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bendEnv, resolveBendExecutable } from "./scripts/bend-toolchain.mjs";
+import { getBendEnv, resolveBendExecutable } from "./scripts/bend-toolchain.mjs";
 
 /** Copied policy files, so a broken variant never touches the repository. */
 function fixture(): string {
@@ -10,7 +10,7 @@ function fixture(): string {
   for (const file of ["engine.bend", "audit.bend", "batch.bend", "LAWS.bend", "PROOF.bend"]) copyFileSync(join(import.meta.dir, file), join(dir, file));
   return dir;
 }
-const prove = (dir: string) => Bun.spawnSync([resolveBendExecutable(), "PROOF.bend"], { cwd: dir, env: bendEnv });
+const prove = (dir: string) => Bun.spawnSync([resolveBendExecutable(), "PROOF.bend"], { cwd: dir, env: getBendEnv() });
 const output = (result: Bun.SyncSubprocess) => (result.stdout?.toString() ?? "") + (result.stderr?.toString() ?? "");
 
 test("every stated audit law is proven on the pinned compiler", () => {
@@ -27,7 +27,9 @@ test("a broken conflict implementation fails its law, not the syntax", () => {
   try {
     expect(prove(dir).exitCode).toBe(0);
     const audit = readFileSync(join(dir, "audit.bend"), "utf8");
-    writeFileSync(join(dir, "audit.bend"), audit.replace("    case True{}:\n      5n", "    case True{}:\n      0n"));
+    const mutated = audit.replace("    case True{}:\n      5n", "    case True{}:\n      0n");
+    if (mutated === audit) throw new Error("mutation target not found in audit.bend");
+    writeFileSync(join(dir, "audit.bend"), mutated);
     const broken = prove(dir);
     expect(broken.exitCode).not.toBe(0);
     expect(output(broken)).toContain("conflict_wins");
@@ -38,7 +40,9 @@ test("a law without its proof is an open claim the gate rejects", () => {
   const dir = fixture();
   try {
     const proof = readFileSync(join(dir, "PROOF.bend"), "utf8");
-    writeFileSync(join(dir, "PROOF.bend"), proof.replace(/def Laws\.checkpoint_only\(intervals, total, expected, modern\):\n  \{==\}\n/, ""));
+    const mutated = proof.replace(/def Laws\.checkpoint_only\(intervals, total, expected, modern\):\n  \{==\}\n/, "");
+    if (mutated === proof) throw new Error("mutation target not found in PROOF.bend");
+    writeFileSync(join(dir, "PROOF.bend"), mutated);
     const missing = prove(dir);
     expect(missing.exitCode).not.toBe(0);
     // An unproven law is reported as an open claim, never as a syntax or tool error.

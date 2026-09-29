@@ -120,7 +120,7 @@ def render(spans: List<&2, Span>) -> String:
 # Keep validation, ordering and union here, not in host-language callers.
 def evaluate(text: String) -> Maybe<&2, String>:
   do Maybe<&2, String>:
-    spans : List<&2, Span> <- parse_lines(Batch.split(text, '\n'), (False{}, Nil{}))
+    spans : List<&2, Span> <- parse_lines(Batch.split(Batch.strip_cr(text), '\n'), (False{}, Nil{}))
     return render(merge_all(Batch.sort(~Span, ~span_le, spans), Nil{}))
 
 def reconcile(result: Maybe<&2, String>) -> IO(Unit):

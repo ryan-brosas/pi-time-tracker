@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTimeTrackingExtension } from "./extension";
+import { createTimeTrackingExtension, reportParameters } from "./extension";
 import { labelFor } from "./labels";
 import { appendJsonl, readChunks, readTurnRecords } from "./ledger";
 
@@ -80,7 +80,9 @@ test("work_report summarizes recorded hours and keeps note evidence in the same 
   expect(report).toContain("Verified existing comment permalink");
   expect(report).toContain("verified"); expect(report).toContain("Detailed evidence notes");
   expect(result.content[0].text).toContain("Full draft");
-  expect(result.details).toEqual({ summary: result.details.summary, reportFile: h.logs.reportFile, sinceDay: null });
+  expect(Object.keys(result.details).sort()).toEqual(["reportFile", "sinceDay", "summary"]);
+  expect(result.details.reportFile).toBe(h.logs.reportFile);
+  expect(result.details.sinceDay).toBeNull();
   expect(result.details.summary).toContain("tracked working hours");
   expect(result.details.summary).not.toContain("user-attested 0.0 h");
   // The tool and the slash command share one builder, so both produce that draft.
@@ -88,6 +90,9 @@ test("work_report summarizes recorded hours and keeps note evidence in the same 
 });
 
 test("work_report filters by day, rejects a bad day and stays inside the workspace", async () => {
+  const daySchema = reportParameters.properties.sinceDay as unknown as { pattern: string; minLength: number; maxLength: number };
+  expect(daySchema.pattern).toBe("^\\d{4}-\\d{2}-\\d{2}$");
+  expect(daySchema.minLength).toBe(10); expect(daySchema.maxLength).toBe(10);
   const h = setup();
   h.at("2026-09-25T01:00:00Z"); h.emit("session_start");
   h.emit("before_agent_start", { prompt: "Reddit research" }); h.emit("agent_start");
@@ -103,8 +108,11 @@ test("work_report filters by day, rejects a bad day and stays inside the workspa
   const draft = readFileSync(h.logs.reportFile, "utf8");
   expect(draft).not.toContain("### 2026-09-25");
   expect(draft).toContain("### 2026-09-26");
-  await expect(h.tools.get("work_report").execute("c2", { sinceDay: "26-09-2026" }, undefined, undefined, h.ctx)).rejects.toThrow("Expected report");
-  await expect(h.tools.get("work_report").execute("c3", {}, undefined, undefined, { ...h.ctx, cwd: tmpdir() })).rejects.toThrow("limited to this workspace");
+  const empty = await h.tools.get("work_report").execute("c2", { sinceDay: "2026-09-28" }, undefined, undefined, h.ctx);
+  expect(empty.details.sinceDay).toBe("2026-09-28");
+  expect(readFileSync(h.logs.reportFile, "utf8")).not.toMatch(/^### /m);
+  await expect(h.tools.get("work_report").execute("c3", { sinceDay: "26-09-2026" }, undefined, undefined, h.ctx)).rejects.toThrow("Expected report [YYYY-MM-DD]");
+  await expect(h.tools.get("work_report").execute("c4", {}, undefined, undefined, { ...h.ctx, cwd: tmpdir() })).rejects.toThrow("limited to this workspace");
 });
 
 test("work_report discloses absent outcome notes instead of inventing history", async () => {
@@ -116,12 +124,21 @@ test("work_report discloses absent outcome notes instead of inventing history", 
   expect(report).toContain("No outcome notes were recorded for this day");
   expect(report).not.toContain("Detailed evidence notes");
   expect(report).toContain("Bend receipt audit"); expect(report).not.toContain("Native receipt audit");
-  expect(report).toContain("Prompts, transcripts and file contents are never captured");
+  expect(report).toContain("Prompts, transcripts and file contents are not captured automatically");
+});
+
+test("work_report discloses missing notes for a day with only an open manual session", async () => {
+  const h = setup(); h.emit("session_start");
+  h.commands.get("work").handler("start", h.ctx);
+  await h.tools.get("work_report").execute("open-session", {}, undefined, undefined, h.ctx);
+  const report = readFileSync(h.logs.reportFile, "utf8");
+  expect(report).toContain("Open session since");
+  expect(report).toContain("No outcome notes were recorded for this day");
 });
 
 test("a configured command prefix names both workspace tools consistently", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-time-tracker-prefix-")); roots.push(root);
   const tools = new Map<string, { name: string }>();
-  createTimeTrackingExtension(root, { scopePrefix: "gig", commandPrefix: "gigtime", commandPrefix2: undefined, databasePath: join(root, "db.sqlite"), turnsLog: join(root, "t.jsonl"), chunksLog: join(root, "c.jsonl"), sessionsLog: join(root, "s.jsonl"), activitiesLog: join(root, "a.jsonl"), reportFile: join(root, "report.md") } as never)({ on: () => {}, registerCommand: () => {}, registerTool: (definition: never) => tools.set((definition as { name: string }).name, definition) } as never);
+  createTimeTrackingExtension(root, { scopePrefix: "gig", commandPrefix: "gigtime", databasePath: join(root, "db.sqlite"), turnsLog: join(root, "t.jsonl"), chunksLog: join(root, "c.jsonl"), sessionsLog: join(root, "s.jsonl"), activitiesLog: join(root, "a.jsonl"), reportFile: join(root, "report.md") })({ on: () => {}, registerCommand: () => {}, registerTool: (d: any) => tools.set(d.name, d) } as any);
   expect([...tools.keys()].sort()).toEqual(["gigtime_note", "gigtime_report"]);
 });

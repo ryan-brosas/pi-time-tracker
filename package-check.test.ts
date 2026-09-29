@@ -17,6 +17,8 @@ test.each([
   ["missing-notices", 1, "THIRD_PARTY_NOTICES.md must ship"],
   ["shipped-proof", 1, "proof file must not ship"],
   ["shipped-script", 1, "build tooling must not ship"],
+  ["shipped-test", 1, "test file must not ship"],
+  ["mjs-import", 1, "generated/policy.mjs imports ./helper, which the payload does not ship"],
   ["missing-import", 1, "imports ./missing.ts, which the payload does not ship"],
 ] as const)("package gate: %s", (scenario, status, message) => {
   const root = mkdtempSync(join(tmpdir(), "pi-package-check-"));
@@ -28,6 +30,8 @@ test.each([
       : scenario === "no-generated" ? ["*.ts", "!*.test.ts", "*.bend", "!LAWS.bend", "!PROOF.bend"]
       : scenario === "shipped-proof" ? [...baseline.filter(p => p !== "!PROOF.bend"), "PROOF.bend"]
       : scenario === "shipped-script" ? [...baseline, "scripts/*.ts"]
+      : scenario === "shipped-test" ? baseline.filter(p => p !== "!*.test.ts")
+      : scenario === "mjs-import" ? [...baseline, "generated/*.ts"]
       : baseline;
     const manifest = { private: scenario === "private", license: "MIT", files, pi: { extensions: [scenario === "excluded-entry" ? "./scripts/adapter.ts" : "./index.ts"] } };
     writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
@@ -35,15 +39,17 @@ test.each([
     writeFileSync(join(root, "engine.bend"), "import ./batch.bend as Batch\n");
     for (const file of ["audit.bend", "LAWS.bend"]) writeFileSync(join(root, file), "");
     if (scenario !== "missing-batch") writeFileSync(join(root, "batch.bend"), "");
-    writeFileSync(join(root, "generated", "policy.mjs"), "");
+    writeFileSync(join(root, "generated", "policy.mjs"), scenario === "mjs-import" ? 'import helper from "./helper";\n' : "");
     writeFileSync(join(root, "generated", "policy.d.mts"), "");
     if (scenario !== "missing-notices") writeFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "Third-party notices\n");
-    if (scenario !== "no-generated") writeFileSync(join(root, "scripts", "adapter.ts"), "");
+    writeFileSync(join(root, "scripts", "adapter.ts"), "");
     if (scenario === "shipped-script") writeFileSync(join(root, "scripts", "extra.ts"), "");
+    if (scenario === "shipped-test") writeFileSync(join(root, "index.test.ts"), "");
+    if (scenario === "mjs-import") writeFileSync(join(root, "generated", "helper.ts"), "");
     if (scenario === "shipped-proof") writeFileSync(join(root, "PROOF.bend"), "");
     if (scenario !== "no-license") writeFileSync(join(root, "LICENSE"), "MIT License\n");
     // The checker uses Bun globs, so spawn the project's own runtime.
-    const result = spawnSync("bun", [join(root, "scripts/check-package.mjs")], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [join(root, "scripts/check-package.mjs")], { encoding: "utf8" });
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(status);
     expect(result.stdout + result.stderr).toContain(message);

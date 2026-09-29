@@ -1,4 +1,4 @@
-import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -17,9 +17,10 @@ export interface TimeTrackingOptions extends NativeOptions {
   databasePath?: string; idleGapMs?: number; projectCommand?: string;
 }
 type Ctx = { cwd: string; mode: string; sessionManager?: { getSessionId: () => string | null }; ui: { notify: (message: string, type?: "info" | "warning" | "error") => void; setStatus: (key: string, text: string | undefined) => void; onTerminalInput?: (handler: (data: string) => { consume?: boolean; data?: string } | undefined) => () => void } };
+type ReportCtx = { cwd: string; mode: string; ui: Pick<ExtensionContext["ui"], "notify" | "setStatus"> };
 
 export const reportParameters = Type.Object({
-  sinceDay: Type.Optional(Type.String({ description: "Optional earliest local day to include, as YYYY-MM-DD. Omit to include every recorded day." })),
+  sinceDay: Type.Optional(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$", minLength: 10, maxLength: 10, description: "Optional earliest local day to include, as YYYY-MM-DD. Omit to include every recorded day." })),
 }, { additionalProperties: false });
 
 /** Shared day-argument validation for /work report and /project report. */
@@ -79,7 +80,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       return { sessionId, label: label?.label ?? "unlabeled", ...(label ? { labelSource: label.source } : {}) };
     };
     const sink = (chunk: TurnChunk) => { try { appendJsonl(chunksLog, { ...chunk, ...identity() }); } catch { chunkWriteFailed = true; } };
-    const warn = (ctx: Ctx, text: string) => { if (ctx.mode === "tui") ctx.ui.notify(text, "warning"); else console.error(text); };
+    const warn = (ctx: ReportCtx, text: string) => { if (ctx.mode === "tui") ctx.ui.notify(text, "warning"); else console.error(text); };
     const close = (ctx: Ctx, outcome: "settled" | "interrupted") => {
       if (!turn) return;
       const current = turn; turn = undefined;
@@ -94,7 +95,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       chunkWriteFailed = false; promptDepth = 0; requestLabel = undefined; turnTools.clear();
     };
     const observe = (ctx: Ctx, cwd = scopedCwd(ctx.cwd)) => { if (turn) { if (cwd) turn.event(now()); else close(ctx, "interrupted"); } };
-    const getStore = (ctx: Ctx): ProjectStore | undefined => {
+    const getStore = (ctx: ReportCtx): ProjectStore | undefined => {
       if (autoFailed) return undefined;
       if (store) return store;
       try { store = new ProjectStore(databasePath); return store; }
@@ -104,12 +105,12 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       autoClock = undefined; workspace = undefined; task = "unlabeled"; liveCtx = undefined;
       if (unsubscribeInput) { try { unsubscribeInput(); } catch { /* a vanished UI subscription is not evidence */ } unsubscribeInput = undefined; }
     };
-    const disableAutomatic = (ctx: Ctx, e: unknown) => {
+    const disableAutomatic = (ctx: ReportCtx, e: unknown) => {
       autoFailed = true; clearAutomatic(); deferredClocks.clear(); deferralNotified = false;
       if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, "Automatic work tracking disabled (error); retry on next session");
       warn(ctx, `${projectCommand}: automatic work tracking disabled — ${e instanceof Error ? e.message : String(e)}`);
     };
-    const deferClock = (clock: AutomaticClock, observation: number | null, ctx: Ctx) => {
+    const deferClock = (clock: AutomaticClock, observation: number | null, ctx: ReportCtx) => {
       const prior = deferredClocks.get(clock);
       const earliest = prior == null ? observation : observation == null ? prior : Math.min(prior, observation);
       if (prior === undefined && deferredClocks.size >= DEFERRED_LIMIT) {
@@ -125,7 +126,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       }
     };
     /** Apply one deferred clock's earliest unrecorded observation, then persist. False means it is still deferred. */
-    const saveDeferred = (clock: AutomaticClock, ctx: Ctx): boolean => {
+    const saveDeferred = (clock: AutomaticClock, ctx: ReportCtx): boolean => {
       const observation = deferredClocks.get(clock);
       try {
         if (typeof observation === "number") { clock.touch(observation); deferredClocks.set(clock, null); }
@@ -139,7 +140,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       }
     };
     /** One blocking attempt per event: stop at the first clock the database still refuses, never spin. */
-    const retryDeferred = (ctx: Ctx): boolean => {
+    const retryDeferred = (ctx: ReportCtx): boolean => {
       for (const clock of [...deferredClocks.keys()]) if (!saveDeferred(clock, ctx)) return false;
       if (deferralNotified) {
         deferralNotified = false;
@@ -161,7 +162,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
       }
       try { clock.touch(at); } catch (e) { if (isSqliteBusy(e)) deferClock(clock, at, ctx); else disableAutomatic(ctx, e); }
     };
-    const flushAutomatic = (ctx: Ctx) => {
+    const flushAutomatic = (ctx: ReportCtx) => {
       if (!autoClock) return;
       if (!saveDeferred(autoClock, ctx)) {
         if (!autoFailed) deferClock(autoClock, null, ctx);
@@ -187,7 +188,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         if (ctx.mode === "tui") ctx.ui.setStatus(statusKey, `Automatic work tracking on (${workspace.client}); /${projectCommand} set labels this workspace`);
       } catch (e) { disableAutomatic(ctx, e); }
     };
-    const automaticEvidence = (ctx: Ctx): { windows: WorkWindow[]; idleGapMs: number } | undefined => {
+    const automaticEvidence = (ctx: ReportCtx): { windows: WorkWindow[]; idleGapMs: number } | undefined => {
       const s = getStore(ctx);
       if (!s) return undefined;
       const reportWorkspace = workspace ?? s.resolveWorkspace(ctx.cwd);
@@ -195,13 +196,13 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     };
     // One builder for the slash command and the model-facing tool: no second summary
     // path, and the draft is written at most once per call.
-    const renderWorkReport = (day: string | null, ctx: Ctx) => {
+    const renderWorkReport = (day: string | null, ctx: ReportCtx) => {
       turn?.checkpoint();
       flushAutomatic(ctx);
       const automatic = automaticEvidence(ctx);
       const result = buildWorkReport({ ...options, root, scopePrefix, timezones, now: now(), sinceDay: day, turnsLog, chunksLog, sessionsLog, activitiesLog, ...(automatic ? { automatic } : {}) });
       writeFilePrivate(reportFile, result.text);
-      return { summary: result.summary, reportFile };
+      return { summary: result.summary, reportFile, message: `${result.summary}. Full draft: ${reportFile}` };
     };
     pi.on("session_start", (_event, ctx) => {
       close(ctx, "interrupted"); sessionId = ctx.sessionManager?.getSessionId() ?? randomUUID(); requestLabel = undefined;
@@ -267,7 +268,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
     // reconstructs totals from raw JSONL, which is slow and easy to get wrong.
     pi.registerTool({
       name: `${command}_report`, label: "Working-hours draft",
-      description: "Summarize the tracked working hours already recorded for this workspace and refresh the local draft (exports/work-report.md). Use it for any question about how much time was tracked, instead of reading raw receipt logs. The tracked agent-turn union, the user-attested session clock and the inferred automatic windows stay separate measures and are never added together. It writes the normal local draft; it never invoices, syncs or invents missing hours.",
+      description: "Summarize the tracked working hours already recorded for this workspace and refresh the local draft. Use it for any question about how much time was tracked, instead of reading raw receipt logs. The tracked agent-turn union, the user-attested session clock and the inferred automatic windows stay separate measures and are never added together. It writes the normal local draft; it never invoices, syncs or invents missing hours.",
       promptSnippet: "Summarize recorded working hours for this workspace and refresh the local draft.",
       promptGuidelines: [`When the user asks about tracked hours, time spent, or a work report, call ${command}_report instead of reading receipt logs or recomputing totals in the shell.`, `Report the returned per-timezone summary and cite the draft path; keep the session clock, tracked agent-turn hours and inferred windows separate and never add them.`, `Record outcome detail with ${command}_note: ${command}_report only measures recorded intervals and leaves days without evidence Unknown.`],
       executionMode: "sequential",
@@ -276,9 +277,9 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         if (!scopedCwd(ctx.cwd)) throw new Error("Working-hours reports are limited to this workspace");
         const requested = (args as { sinceDay?: string }).sinceDay ?? "";
         const day = parseReportDay(requested);
-        const { summary, reportFile: file } = renderWorkReport(day, ctx as unknown as Ctx);
+        const { summary, reportFile: file, message } = renderWorkReport(day, ctx);
         return {
-          content: [{ type: "text", text: `${summary}. Full draft: ${file}\nMeasures stay separate; outcome detail comes only from recorded work notes.` }],
+          content: [{ type: "text", text: `${message}\nMeasures stay separate; outcome detail comes only from recorded work notes.` }],
           details: { summary, reportFile: file, sinceDay: day },
         };
       },
@@ -308,7 +309,7 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
         const [total] = reconcileIntervals([chunks.map(c => ({ start: Date.parse(c.start), end: Date.parse(c.end) }))], options);
         ctx.ui.notify(`${records.length} settled Pi turns · ${chunks.length ? hours(total) : "Unknown"} tracked working hours (interval union). Legacy aggregates excluded. Log: ${turnsLog}`, "info");
       },
-      report: (args, ctx) => { const { summary, reportFile: file } = renderWorkReport(parseReportDay(args), ctx); ctx.ui.notify(`${summary}. Full draft: ${file}`, "info"); },
+      report: (args, ctx) => { const { message } = renderWorkReport(parseReportDay(args), ctx); ctx.ui.notify(message, "info"); },
     };
     pi.registerCommand(command, {
       description: `Working hours: /${command} start|stop|status|time|report`,
@@ -360,8 +361,8 @@ export function createTimeTrackingExtension(configuredRoot?: string, options: Ti
           ctx.ui.notify(`${result.summary}. Full draft: ${file}. Repository-local agent and manual receipts are separate measures and are not included.`, "info");
           return;
         }
-        const { summary, reportFile: file } = renderWorkReport(parseReportDay(args, "[YYYY-MM-DD|all]"), ctx);
-        ctx.ui.notify(`${summary}. Full draft: ${file}`, "info");
+        const { message } = renderWorkReport(parseReportDay(args, "[YYYY-MM-DD|all]"), ctx);
+        ctx.ui.notify(message, "info");
       },
     };
     pi.registerCommand(projectCommand, {

@@ -9,9 +9,28 @@ const root = import.meta.dir;
 test("pack:test rejects a missing supplied artifact instead of repacking the checkout", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-release-pack-"));
   try {
-    const result = spawnSync("bun", [join(root, "scripts/pack-test.mjs"), join(dir, "missing.tgz")], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [join(root, "scripts/pack-test.mjs"), join(dir, "missing.tgz")], { encoding: "utf8" });
     expect(result.status).not.toBe(0);
     expect(result.stdout + result.stderr).toContain("supplied tarball does not exist");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("release pack step publishes the filename npm actually produced", () => {
+  const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/npm-publish.yml"), "utf8")) as any;
+  const pack = workflow.jobs.publish.steps.find((step: any) => step.id === "pack");
+  const dir = mkdtempSync(join(tmpdir(), "pi-pack-step-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "renamed-package", version: "1.2.3", files: ["*"] }));
+    writeFileSync(join(dir, "index.js"), "");
+    const runnerTemp = join(dir, "runner-temp"), output = join(dir, "github-output.txt");
+    mkdirSync(runnerTemp);
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-c", pack.run], { cwd: dir, encoding: "utf8", env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: output } });
+    expect(result.status, result.stderr).toBe(0);
+    const tarball = readFileSync(output, "utf8").match(/^tarball=(.+)$/m)?.[1];
+    expect(tarball).toBe("renamed-package-1.2.3.tgz");
+    expect(existsSync(join(runnerTemp, tarball!))).toBe(true);
+    expect(tarball).not.toContain("pi-time-tracker");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -50,6 +69,11 @@ test("release workflow promotes one verified artifact only after main's manual n
   expect(download.with["digest-mismatch"]).toBe("error");
   const cut = release.steps.at(-1);
   expect(cut.run).toBe("bash scripts/github-release.sh");
+  // github-release.sh peels the tag with git ls-remote, so the job must have a
+  // checkout whose origin is the release repository before it runs.
+  const checkoutIndex = release.steps.findIndex((step: any) => step.uses?.startsWith("actions/checkout@"));
+  expect(checkoutIndex).toBeGreaterThanOrEqual(0);
+  expect(checkoutIndex).toBeLessThan(release.steps.indexOf(cut));
   expect(cut.env.RELEASE_VERSION).toBe("${{ needs.publish.outputs.version }}");
   expect(cut.env.RELEASE_TARBALL).toBe("${{ runner.temp }}/release/${{ needs.publish.outputs.tarball }}");
   for (const job of [publish, release]) {
@@ -89,7 +113,7 @@ test.each([
     git("remote", "add", "origin", scenario === "unreachable" ? join(dir, "absent-origin") : dir);
     const bin = join(dir, "bin"), calls = join(dir, "calls.txt"), tarball = join(dir, `pi-time-tracker-${version}.tgz`);
     mkdirSync(bin);
-    writeFileSync(join(bin, "gh"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$RELEASE_CALLS"\nexit "${GH_EXIT_CODE:-0}"\n');
+    writeFileSync(join(bin, "gh"), '#!/bin/sh\nprintf "%s\\n" "$@" >> "$RELEASE_CALLS"\nexit "${GH_EXIT_CODE:-0}"\n');
     chmodSync(join(bin, "gh"), 0o755);
     if (scenario !== "missing-artifact") writeFileSync(tarball, "test fixture; no registry involved");
     const result = spawnSync("bash", [join(root, "scripts/github-release.sh")], {

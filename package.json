@@ -1,7 +1,7 @@
 {
   "name": "pi-time-tracker",
   "version": "0.1.0",
-  "description": "Private working-hours receipts for Pi, reconciled by a verified Bend accounting policy.",
+  "description": "Private working-hours receipts for Pi, reconciled by a tested Bend accounting policy.",
   "license": "MIT",
   "keywords": ["pi-package"],
   "files": ["*.ts", "!*.test.ts", "*.bend", "!LAWS.bend", "!PROOF.bend", "generated/policy.mjs", "generated/policy.d.mts", "THIRD_PARTY_NOTICES.md"],
@@ -17,8 +17,8 @@
     "check": "tsc --noEmit",
     "pack:check": "bun scripts/check-package.mjs",
     "build:bend": "bun scripts/build-bend.mjs",
-    "build:check": "bun scripts/build-bend.mjs --check",
-    "proof:check": "bun test proof-gate.test.ts",
+    "build:check": "bun run build:bend --check",
+    "proof:check": "bun test --timeout 90000 proof-gate.test.ts",
     "pack:test": "bun scripts/pack-test.mjs"
   },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*", "typebox": "*" },

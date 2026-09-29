@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { auditTurnReceipts, nativeExecutable, reconcileIntervals } from "./native";
+import { auditTurnReceipts, engineLabel, nativeExecutable, reconcileIntervals } from "./native";
 import type { TimeRecord, TurnChunk } from "./ledger";
 import { evaluateAudit, evaluateIntervals } from "./generated/policy.mjs";
 
@@ -18,6 +18,33 @@ function generated<T>(run: () => T): T {
 }
 const nativeLane = () => ({ nativeExecutable: nativeExecutable() });
 
+test("native selection does not load the generated artifact", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "worktime-native-lazy-"));
+  try {
+    copyFileSync(join(import.meta.dir, "native.ts"), join(dir, "native.ts"));
+    const cloned = await import(join(dir, "native.ts"));
+    expect(cloned.engineLabel({ nativeExecutable: "native" })).toBe("native Bend");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("generated policy exceptions are wrapped with rebuild guidance", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "worktime-native-policy-error-"));
+  try {
+    copyFileSync(join(import.meta.dir, "native.ts"), join(dir, "native.ts"));
+    mkdirSync(join(dir, "generated"));
+    writeFileSync(join(dir, "generated", "policy.mjs"), 'export const evaluateIntervals = () => { throw new RangeError("test failure"); }; export const evaluateAudit = evaluateIntervals;');
+    const cloned = await import(join(dir, "native.ts"));
+    expect(() => cloned.reconcileIntervals([[{ start: 0, end: 1 }]])).toThrow(/Generated Bend policy evaluation failed: test failure; rebuild with bun run build:bend/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("empty native override falls through to a configured compiler", () => {
+  const old = process.env.WORKTIME_BEND_BINARY;
+  process.env.WORKTIME_BEND_BINARY = "";
+  try { expect(engineLabel({ bendExecutable: "bend" })).toBe("native Bend"); }
+  finally { if (old === undefined) delete process.env.WORKTIME_BEND_BINARY; else process.env.WORKTIME_BEND_BINARY = old; }
+});
+
 const mixed = [
   [{ start: 5, end: 20 }, { start: 0, end: 10 }, { start: 5, end: 20 }, { start: 30, end: 40 }, { start: 20, end: 25 }],
   [{ start: Date.parse("2026-09-27T00:00:00Z"), end: Date.parse("2026-09-27T00:01:00Z") }, { start: Date.parse("2026-09-27T00:00:20Z"), end: Date.parse("2026-09-27T00:01:20Z") }],
@@ -26,13 +53,15 @@ const mixed = [
   [{ start: 0, end: 0 }],
 ];
 
-for (const [lane, options] of [["generated", undefined], ["native", nativeLane()]] as const) {
+for (const [lane, makeOptions] of [["generated", () => undefined], ["native", nativeLane]] as const) {
   test(`${lane} Bend deduplicates nested, touching and unsorted intervals at epoch precision`, () => {
-    const run = () => reconcileIntervals(mixed, options);
+    const options = makeOptions();
+    const run = () => reconcileIntervals(structuredClone(mixed), options);
     expect(lane === "generated" ? generated(run) : run()).toEqual([35, 80_000, 0, 9, 0]);
   }, 90_000);
 
   test(`${lane} reducer agrees with a seeded discrete-time coverage oracle`, () => {
+    const options = makeOptions();
     let seed = 73;
     const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
     const groups = Array.from({ length: 50 }, () => Array.from({ length: 35 }, () => { const start = random() % 200; return { start, end: start + random() % 35 }; }));
@@ -42,6 +71,7 @@ for (const [lane, options] of [["generated", undefined], ["native", nativeLane()
   }, 90_000);
 
   test(`${lane} union ignores interval order and duplicate rows`, () => {
+    const options = makeOptions();
     const ivs = [{ start: 0, end: 10 }, { start: 5, end: 20 }, { start: 30, end: 40 }, { start: 5, end: 20 }];
     const expected = 20 + 10;
     const permutations = [ivs, [...ivs].reverse(), [ivs[1], ivs[3], ivs[0], ivs[2]]];
@@ -52,32 +82,52 @@ for (const [lane, options] of [["generated", undefined], ["native", nativeLane()
   }, 90_000);
 }
 
+const malformedIntervals = ["0,20,10", "0,-1,20", "0,1,2,3", "secret,1,2", "0,1,281474976710656", "0,1.5,2"];
+
 test("generated policy rejects malformed transport instead of guessing", () => {
-  for (const input of ["0,20,10", "0,-1,20", "0,1,2,3", "secret,1,2", "0,1,281474976710656", "0,1.5,2"]) {
+  for (const input of malformedIntervals) {
     expect(evaluateIntervals(input)).toEqual({ $: "None" });
   }
 });
 
+test("generated policy rejects malformed receipt audit transport", () => {
+  for (const input of ["0,1,2", "x,1,1,1,1,1,0", "0,0,0,2,0,0,0", "0,0,0,1,0,2,0", "0,0,0,1,0.5,1,0"]) {
+    expect(evaluateAudit(input)).toEqual({ $: "None" });
+  }
+});
+
+test("generated policies accept CRLF rows", () => {
+  expect(evaluateIntervals("0,0,10\r\n0,5,15\r\n")).toEqual({ $: "Some", value: "worktime-v1\n0,15\n" });
+  expect(evaluateAudit("0,10,1,1,10,1,0\r\n0,20,1,1,20,1,1\r\n")).toEqual({ $: "Some", value: "worktime-audit-v1\n0,5,10,2\n" });
+});
+
+test("Batch.sort retains first input row for equal group keys", () => {
+  expect(evaluateAudit("0,10,1,1,10,1,0\n0,20,1,1,20,1,1")).toEqual({ $: "Some", value: "worktime-audit-v1\n0,5,10,2\n" });
+  expect(evaluateAudit("0,20,1,1,20,1,1\n0,10,1,1,10,1,0")).toEqual({ $: "Some", value: "worktime-audit-v1\n0,5,20,2\n" });
+});
+
 test("native CLI rejects malformed transport and the bridge fails explicitly without a native executable", () => {
+  const native = nativeLane();
   const dir = mkdtempSync(join(tmpdir(), "worktime-bend-test-"));
   try {
     const file = join(dir, "input");
-    for (const input of ["0,20,10", "0,-1,20", "0,1,2,3", "secret,1,2", "0,1,281474976710656"]) {
+    for (const input of malformedIntervals) {
       writeFileSync(file, input, { mode: 0o600 });
       const r = spawnSync(nativeExecutable(), ["--threads", "1", "--", file], { encoding: "utf8", timeout: 10_000 });
       expect(r.status).not.toBe(0); expect(r.stderr + r.stdout).not.toContain(input);
     }
     expect(() => reconcileIntervals([[{ start: 0, end: 10 }]], { nativeExecutable: join(dir, "missing") })).toThrow("Bend reconciliation failed");
     expect(() => reconcileIntervals([[{ start: 0, end: 2 ** 48 }]])).toThrow("Invalid interval bounds");
-    expect(() => reconcileIntervals([[{ start: 0, end: 2 ** 48 }]], nativeLane())).toThrow("Invalid interval bounds");
+    expect(() => reconcileIntervals([[{ start: 0, end: 2 ** 48 }]], native)).toThrow("Invalid interval bounds");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 // Small fixtures hid a real failure: Base string/list helpers recurse per character or
 // row, so a year of epoch receipts overflowed the JS stack. Both lanes must now handle
 // the sizes a real ledger reaches, not just toy numbers.
-for (const [lane, options] of [["generated", undefined], ["native", nativeLane()]] as const) {
+for (const [lane, makeOptions] of [["generated", () => undefined], ["native", nativeLane]] as const) {
   test(`${lane} reconciles 1,200 overlapping epoch receipts and 12,000 groups without stack growth`, () => {
+    const options = makeOptions();
     const base = Date.parse("2026-01-01T00:00:00Z"), minute = 60_000;
     let seed = 20_260_101;
     const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
@@ -98,6 +148,7 @@ for (const [lane, options] of [["generated", undefined], ["native", nativeLane()
   }, 90_000);
 
   test(`${lane} audits 12,000 receipts without stack growth`, () => {
+    const options = makeOptions();
     const base = Date.parse("2026-01-01T00:00:00Z"), scope = "scale-pi-turn", five = 5 * 60_000;
     const at = (ms: number) => new Date(base + ms).toISOString();
     const turns: TimeRecord[] = [], chunks: TurnChunk[] = [];
@@ -121,6 +172,8 @@ test("the emitted policy parses a 12,000-row batch directly, without the adapter
   const auditRows = Array.from({ length: 12_000 }, (_, i) => `${i},300000,1,1,300000,1,${i}`).join("\n");
   const audited = generated(() => evaluateAudit(auditRows)) as { $: string; value?: string };
   expect(audited.$).toBe("Some");
-  expect(audited.value!.trimEnd().split("\n")).toHaveLength(12_001);
-  expect(audited.value!.trimEnd().split("\n").at(-1)).toBe("11999,0,300000,1");
-});
+  const lines = audited.value!.trimEnd().split("\n");
+  expect(lines).toHaveLength(12_001);
+  expect(lines[0]).toBe("worktime-audit-v1");
+  expect(lines.at(-1)).toBe("11999,0,300000,1");
+}, 90_000);

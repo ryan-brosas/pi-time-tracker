@@ -152,7 +152,7 @@ def render(rows: List<&2, Row>) -> String:
 # Complete pure boundary; render alone requires already-sorted rows.
 def evaluate(text: String) -> Maybe<&2, String>:
   do Maybe<&2, String>:
-    rows : List<&2, Row> <- parse(Batch.split(text, '\n'), (False{}, Nil{}))
+    rows : List<&2, Row> <- parse(Batch.split(Batch.strip_cr(text), '\n'), (False{}, Nil{}))
     return render(Batch.sort(~Row, ~row_le, rows))
 
 def reconcile(result: Maybe<&2, String>) -> IO(Unit):

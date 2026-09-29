@@ -3,7 +3,7 @@
 // report pipeline with no Bend, Clang or Bun reachable. This is the install
 // claim, so it tests the tarball rather than the working tree.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -11,14 +11,15 @@ const root = join(import.meta.dir, "..");
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const failures = [];
 const check = (condition, message) => { if (!condition) failures.push(message); };
+const fail = (message) => failures.push(message);
 const run = (cmd, options = {}) => Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", ...options });
 const text = (result) => (result.stdout?.toString() ?? "") + (result.stderr?.toString() ?? "");
+const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
-// Resolve the reviewer before scrubbing PATH for the probe.
-const node = process.env.WORKTIME_NODE ?? Bun.which("node");
-check(node !== null, "no Node binary found; set WORKTIME_NODE or put node on PATH");
-const nodeVersion = node ? text(run([node, "--version"])).trim() : "";
-const floor = manifest.engines?.node?.replace(/[^0-9.]/g, "") ?? "0";
+// Every runtime file the packaged probe imports, plus the license/readme payload.
+const required = ["index.ts", "ledger.ts", "engine.bend", "audit.bend", "batch.bend", "native.ts", "report.ts", "generated/policy.mjs", "generated/policy.d.mts", "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md"];
+const forbidden = ["LAWS.bend", "PROOF.bend", "proof-gate.test.ts", "tsconfig.json"];
+
 const atLeast = (a, b) => {
   const left = a.replace(/^v/, "").split(".").map(Number), right = b.split(".").map(Number);
   for (let i = 0; i < Math.max(left.length, right.length); i++) {
@@ -27,51 +28,75 @@ const atLeast = (a, b) => {
   }
   return true;
 };
-check(atLeast(nodeVersion, floor), `Node ${floor}+ is required by package.json engines, found ${nodeVersion || "none"}`);
 
-if (process.argv.length > 3) throw new Error("Usage: bun run pack:test [tarball.tgz]");
-let tarball = process.argv[2] ? resolve(process.argv[2]) : null;
-if (tarball && !existsSync(tarball)) throw new Error(`supplied tarball does not exist: ${tarball}`);
-const workspace = mkdtempSync(join(tmpdir(), "pi-worktime-pack-"));
-try {
+// Resolve the Node binary before scrubbing PATH for the probe. Bun.which returns a
+// path for a non-executable file, so the executable bit and `--version` are checked here.
+const resolveNode = () => {
+  const found = Bun.which(process.env.WORKTIME_NODE ?? "node");
+  let executable = false;
+  if (found) { try { accessSync(found, constants.X_OK); executable = true; } catch { executable = false; } }
+  if (!found || !executable) { fail("no Node binary found; set WORKTIME_NODE or put node on PATH"); return null; }
+  const result = run([found, "--version"]);
+  const version = text(result).trim();
+  if (result.exitCode !== 0 || !/^v\d+(\.\d+)*$/.test(version)) {
+    fail(`could not read a valid Node version from ${found}; set WORKTIME_NODE or put node on PATH`);
+    return null;
+  }
+  const floor = manifest.engines?.node?.replace(/[^0-9.]/g, "") ?? "0";
+  if (!atLeast(version, floor)) { fail(`Node ${floor}+ is required by package.json engines, found ${version}`); return null; }
+  return { bin: found, version, floor };
+};
+
+const verify = (workspace) => {
+  let tarball = process.argv[2] ? resolve(process.argv[2]) : null;
   if (!tarball) {
     const packed = run(["npm", "pack", "--ignore-scripts", "--pack-destination", workspace], { cwd: root });
-    if (packed.exitCode !== 0) throw new Error(`npm pack failed: ${text(packed).slice(-600)}`);
+    if (packed.exitCode !== 0) return fail(`npm pack failed: ${text(packed).slice(-600)}`);
     const filename = readdirSync(workspace).find((name) => name.endsWith(".tgz"));
-    if (!filename) throw new Error("npm pack produced no tarball");
+    if (!filename) return fail("npm pack produced no tarball");
     tarball = join(workspace, filename);
   }
-  if (run(["tar", "-xzf", tarball, "-C", workspace]).exitCode !== 0) throw new Error("could not extract the packed tarball");
+  if (run(["tar", "-xzf", tarball, "-C", workspace]).exitCode !== 0) return fail("could not extract the packed tarball");
   const pkg = join(workspace, "package");
-  const shippedManifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+  const shippedManifestPath = join(pkg, "package.json");
+  if (!existsSync(shippedManifestPath)) return fail("the extracted tarball is missing package.json");
+  const shippedManifest = JSON.parse(readFileSync(shippedManifestPath, "utf8"));
   check(shippedManifest.name === manifest.name && shippedManifest.version === manifest.version, "the tarball name/version differs from package.json");
 
-  const shipped = readdirSync(join(pkg, "generated"));
-  const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
-  for (const file of ["index.ts", "engine.bend", "audit.bend", "batch.bend", "native.ts", "report.ts", "LICENSE", "README.md"]) {
-    check(Bun.file(join(pkg, file)).size > 0, `the tarball is missing ${file}`);
+  for (const file of required) {
+    const path = join(pkg, file);
+    if (!existsSync(path)) { fail(`the tarball is missing ${file}`); continue; }
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.size === 0) fail(`the tarball file is empty or not a regular file: ${file}`);
   }
-  check(shipped.includes("policy.mjs"), "the tarball is missing generated/policy.mjs");
-  check(shipped.includes("policy.d.mts"), "the tarball is missing generated/policy.d.mts");
-  check(digest(join(pkg, "generated", "policy.mjs")) === digest(join(root, "generated", "policy.mjs")), "the tarball carries a different generated policy than the committed one");
-  const notices = readFileSync(join(pkg, "THIRD_PARTY_NOTICES.md"), "utf8");
-  check(notices.includes("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION") && notices.includes("END OF TERMS AND CONDITIONS") && notices.includes("Copyright 2026 HigherOrderCO"), "the tarball must carry Bend's license text and attribution");
-  check(digest(join(pkg, "THIRD_PARTY_NOTICES.md")) === digest(join(root, "THIRD_PARTY_NOTICES.md")), "the tarball carries different third-party notices");
-  for (const file of ["LAWS.bend", "PROOF.bend", "proof-gate.test.ts", "tsconfig.json"]) {
-    check(!Bun.file(join(pkg, file)).size, `the tarball must not ship ${file}`);
+  for (const file of forbidden) {
+    if (existsSync(join(pkg, file))) fail(`the tarball must not ship ${file}`);
   }
-  check(!Bun.file(join(pkg, "scripts", "build-bend.mjs")).size, "the tarball must not ship build tooling");
+  if (existsSync(join(pkg, "scripts", "build-bend.mjs"))) fail("the tarball must not ship build tooling");
+
+  const policy = join(pkg, "generated", "policy.mjs"), committedPolicy = join(root, "generated", "policy.mjs");
+  if (existsSync(policy) && existsSync(committedPolicy)) check(digest(policy) === digest(committedPolicy), "the tarball carries a different generated policy than the committed one");
+  const notices = join(pkg, "THIRD_PARTY_NOTICES.md"), committedNotices = join(root, "THIRD_PARTY_NOTICES.md");
+  if (existsSync(notices)) {
+    const source = readFileSync(notices, "utf8");
+    check(source.includes("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION") && source.includes("END OF TERMS AND CONDITIONS") && source.includes("Copyright 2026 HigherOrderCO"), "the tarball must carry Bend's license text and attribution");
+    if (existsSync(committedNotices)) check(digest(notices) === digest(committedNotices), "the tarball carries different third-party notices");
+  }
 
   // The Pi host supplies peer packages; link the installed ones so resolution
   // matches a real install instead of failing on an absent node_modules.
   for (const name of Object.keys(manifest.peerDependencies ?? {})) {
     const target = join(root, "node_modules", name);
-    check(Bun.file(join(target, "package.json")).size > 0, `peer ${name} must be installed to verify the artifact`);
-    if (Bun.file(join(target, "package.json")).size > 0) {
+    const installed = existsSync(join(target, "package.json"));
+    check(installed, `peer ${name} must be installed to verify the artifact`);
+    if (installed) {
       mkdirSync(join(pkg, "node_modules", name.split("/").slice(0, -1).join("/")), { recursive: true });
       symlinkSync(target, join(pkg, "node_modules", name), "dir");
     }
   }
+  // The compiler-free probe needs every runtime file; skip it when a payload check
+  // already failed so the summary reports the cause instead of an opaque crash.
+  if (failures.length) return;
 
   const zero = join(workspace, "zero");
   const probe = `
@@ -111,20 +136,32 @@ console.log("packaged artifact works with no compiler: " + JSON.stringify(report
 `;
   const probePath = join(workspace, "probe.mts");
   writeFileSync(probePath, probe);
-  const result = run([node, "--experimental-strip-types", "--no-warnings", probePath], {
+  const result = run([node.bin, "--experimental-strip-types", "--no-warnings", probePath], {
     env: { PATH: "/nonexistent", HOME: zero, XDG_STATE_HOME: zero, XDG_CACHE_HOME: zero },
   });
-  check(result.exitCode === 0, `packaged probe failed under ${nodeVersion}: ${text(result).slice(-1200)}`);
-  process.stdout.write(text(result));
+  check(result.exitCode === 0, `packaged probe failed under ${node.version}: ${text(result).slice(-1200)}`);
+  if (result.exitCode === 0) process.stdout.write(text(result));
   // An explicit prebuilt-binary override must select the native lane, not silently fall back.
-  const nativeOnly = run([node, "--experimental-strip-types", "--no-warnings", "-e", `import(${JSON.stringify(join(pkg, "native.ts"))}).then((m) => m.reconcileIntervals([[{ start: 0, end: 10 }]]));`], {
+  const nativeOnly = run([node.bin, "--experimental-strip-types", "--no-warnings", "-e", `import(${JSON.stringify(join(pkg, "native.ts"))}).then((m) => m.reconcileIntervals([[{ start: 0, end: 10 }]]));`], {
     env: { PATH: "/nonexistent", HOME: zero, WORKTIME_BEND_BINARY: join(zero, "missing-binary") },
   });
   check(nativeOnly.exitCode !== 0 && text(nativeOnly).includes("Bend reconciliation failed"), "WORKTIME_BEND_BINARY must select the native lane instead of falling back");
-  if (failures.length) {
-    console.error(`\nPackaged artifact is not installable (${failures.length} problem${failures.length === 1 ? "" : "s"}):`);
-    for (const message of failures) console.error(` - ${message}`);
-    process.exit(1);
-  }
-  console.log(`Packaged artifact OK on ${nodeVersion} (floor ${floor}): compiled-free policy, receipts and report verified with no Bend, Clang or Bun.`);
-} finally { rmSync(workspace, { recursive: true, force: true }); }
+};
+
+if (process.argv.length > 3) throw new Error("Usage: bun run pack:test [tarball.tgz]");
+const supplied = process.argv[2] ? resolve(process.argv[2]) : null;
+if (supplied && !existsSync(supplied)) throw new Error(`supplied tarball does not exist: ${supplied}`);
+const node = resolveNode();
+if (node) {
+  const workspace = mkdtempSync(join(tmpdir(), "pi-worktime-pack-"));
+  try { verify(workspace); }
+  catch (error) { fail(`pack:test could not finish: ${error?.message ?? error}`); }
+  finally { rmSync(workspace, { recursive: true, force: true }); }
+}
+if (failures.length) {
+  console.error(`\nPackaged artifact is not installable (${failures.length} problem${failures.length === 1 ? "" : "s"}):`);
+  for (const message of failures) console.error(` - ${message}`);
+  process.exitCode = 1;
+} else {
+  console.log(`Packaged artifact OK on ${node.version} (floor ${node.floor}): compiled-free policy, receipts and report verified with no Bend, Clang or Bun.`);
+}

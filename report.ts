@@ -112,7 +112,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
       autoTotal += totals[d.auto]; hasAuto ||= groups[d.auto].length > 0;
       lines.push(`### ${key}`, "", `- Tracked working hours: ${measured ? hours(totals[d.agent]) : "Unknown (no interval evidence)"}.`, `- Session clock: ${attested ? `user-attested ${hours(totals[d.session])}` : "Unknown (no closed session)"}.`);
       if (d.legacy.length || d.missing.length || d.conflicts.size || [...d.details.values()].some(v => audits.get(v.turnId)?.status === "mismatch")) lines.push("- Coverage is incomplete. Recorded intervals do not establish this day's full working hours.");
-      if (!d.notes.length && (measured || attested || groups[d.auto].length)) lines.push("- No outcome notes were recorded for this day: timestamps and labels show activity, not what was completed.");
+      if (!d.notes.length && (measured || attested || groups[d.auto].length || d.open.length)) lines.push("- No outcome notes were recorded for this day: timestamps and labels show activity, not what was completed.");
       for (const start of d.open) lines.push(`- Open session since ${new Date(start).toISOString()}; end Unknown.`);
       for (const [label, id] of d.labels) labelTotals.set(label, (labelTotals.get(label) ?? 0) + totals[id]);
       if (d.details.size) {
@@ -157,7 +157,7 @@ export function buildWorkReport(options: ReportOptions): { text: string; summary
     ] : []),
     "- Labels are heuristic drafts unless explicitly supplied. Per-label totals may overlap across concurrent sessions.",
     "- Notes document outcomes, not extra duration. A verification date is not a publication date. No external sync is performed.",
-    "- Outcome detail exists only where a work note was recorded with a label, status and summary. Prompts, transcripts and file contents are never captured, so missing narrative is disclosed rather than reconstructed.", "");
+    "- Outcome detail exists only where a work note was recorded with a label, status and summary. Prompts, transcripts and file contents are not captured automatically, so missing narrative is disclosed rather than reconstructed.", "");
   return { text: lines.join("\n"), summary: summaries.join(" | ") };
 }
 
