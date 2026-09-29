@@ -1,6 +1,11 @@
 name: Publish npm and GitHub release
 
 on:
+  # Every main push is a release candidate. The plan job decides whether it is one,
+  # so a push that is already published or older than the release skips instead of
+  # republishing an immutable version.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -8,11 +13,40 @@ permissions:
 
 concurrency:
   group: publish-npm
+  # Releases are never cancelled or interrupted; a newer push queues behind the
+  # running one so its artifact and tag stay consistent with the commit it tested.
   cancel-in-progress: false
+  queue: max
 
 jobs:
-  publish:
+  # Read-only. Resolves release eligibility and the version to ship; it never
+  # stamps the checkout, tags, publishes or writes to the registry.
+  plan:
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Release tags in the full history decide the next version; a shallow
+          # clone cannot see them.
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Decide the release version
+        id: version
+        run: bun scripts/prepare-release.mjs
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -32,12 +66,18 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
-      # Node 24 provides the npm release that supports OIDC trusted publishing.
+      # The published package supports Node >= 22.19.0; every release gate and the
+      # artifact probe run on that floor. npm OIDC is added later, only for publish.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '22.19.0'
           package-manager-cache: false
+      # The version is generated here rather than committed back to main, so a
+      # release never needs a bot commit and the tag still names the tested source.
+      - name: Stamp the release version and source commit
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: npm pkg set "version=$RELEASE_VERSION" "gitHead=$GITHUB_SHA" --ignore-scripts
       - name: Reject duplicate npm version
         run: |
           version=$(node -p "require('./package.json').version")
@@ -93,6 +133,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+      # Node 24 provides the npm release that supports OIDC trusted publishing.
+      # It is added after the artifact is verified so the probe keeps running on the
+      # floor the package claims to support.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
       - name: Publish the verified artifact via npm OIDC
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}

@@ -34,13 +34,43 @@ test("release pack step publishes the filename npm actually produced", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("release workflow promotes one verified artifact only after main's manual npm publish", () => {
+test("release stamp step writes the generated version and source commit", () => {
   const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/npm-publish.yml"), "utf8")) as any;
-  expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+  const stamp = workflow.jobs.publish.steps.find((step: any) => step.name === "Stamp the release version and source commit");
+  const serialized = JSON.stringify(workflow);
+  // Generated versions must never be pushed back to main, and publishing stays on
+  // OIDC: a repository token or npm auth secret here would be a legacy pattern.
+  expect(serialized).not.toContain("git push");
+  expect(serialized).not.toContain("NPM_TOKEN");
+  expect(serialized).not.toContain("NODE_AUTH_TOKEN");
+  const dir = mkdtempSync(join(tmpdir(), "pi-stamp-step-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixture-pkg", version: "0.2.0" }, null, 2));
+    const sha = "a".repeat(40);
+    const result = spawnSync("bash", ["-c", stamp.run], { cwd: dir, encoding: "utf8", env: { ...process.env, RELEASE_VERSION: "0.2.1", GITHUB_SHA: sha } });
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    expect(manifest.version).toBe("0.2.1");
+    expect(manifest.gitHead).toBe(sha);
+    expect(manifest.name).toBe("fixture-pkg");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("release workflow automatically versions main pushes and promotes one verified artifact", () => {
+  const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/npm-publish.yml"), "utf8")) as any;
+  expect(Object.keys(workflow.on).sort()).toEqual(["push", "workflow_dispatch"]);
+  expect(workflow.on.push).toEqual({ branches: ["main"] });
+  expect(workflow.concurrency.queue).toBe("max");
   expect(workflow.permissions).toEqual({ contents: "read" });
   expect(workflow.concurrency["cancel-in-progress"]).toBe(false);
-  const { publish, release } = workflow.jobs;
-  expect(publish.if).toBe("github.ref == 'refs/heads/main'");
+  const { plan, publish, release } = workflow.jobs;
+  expect(plan.if).toBe("github.ref == 'refs/heads/main'");
+  expect(plan.outputs.version).toBe("${{ steps.version.outputs.version }}");
+  expect(plan.outputs.release).toBe("${{ steps.version.outputs.release }}");
+  expect(plan.steps.find((step: any) => step.id === "version").run).toBe("bun scripts/prepare-release.mjs");
+  expect(plan.steps.find((step: any) => step.uses?.startsWith("actions/checkout@")).with["fetch-depth"]).toBe(0);
+  expect(publish.needs).toBe("plan");
+  expect(publish.if).toBe("needs.plan.outputs.release == 'true'");
   expect(publish.permissions).toEqual({ contents: "read", "id-token": "write" });
   expect(release.needs).toBe("publish");
   expect(release.if).toBeUndefined(); // Default success() must not be bypassed by always().
@@ -57,6 +87,24 @@ test("release workflow promotes one verified artifact only after main's manual n
   expect(probe).toBeGreaterThan(pack);
   expect(archive).toBeGreaterThan(probe);
   expect(publishIndex).toBeGreaterThan(archive);
+  const stamp = steps.findIndex((step: any) => step.name === "Stamp the release version and source commit");
+  const duplicate = steps.findIndex((step: any) => step.name === "Reject duplicate npm version");
+  expect(stamp).toBeGreaterThan(-1);
+  expect(duplicate).toBeGreaterThan(stamp);
+  expect(pack).toBeGreaterThan(duplicate);
+  expect(steps[stamp].env.RELEASE_VERSION).toBe("${{ needs.plan.outputs.version }}");
+  expect(steps[stamp].run).toContain('npm pkg set "version=$RELEASE_VERSION" "gitHead=$GITHUB_SHA"');
+  const nodeSteps = steps.map((step: any, index: number) => ({ step, index })).filter(({ step }: any) => step.uses?.startsWith("actions/setup-node@"));
+  expect(nodeSteps).toHaveLength(2);
+  expect(nodeSteps[0].step.with["node-version"]).toBe("22.19.0");
+  expect(nodeSteps[0].index).toBeLessThan(probe);
+  expect(nodeSteps[1].step.with["node-version"]).toBe("24");
+  expect(nodeSteps[1].index).toBeGreaterThan(probe);
+  expect(nodeSteps[1].index).toBeLessThan(publishIndex);
+  const ci = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")) as any;
+  for (const step of ci.jobs.quality.steps.filter((step: any) => step.run?.startsWith("bun run ") && step.run !== "bun run pack:test")) {
+    expect(steps.some((releaseStep: any) => releaseStep.run === step.run)).toBe(true);
+  }
   expect(steps[probe].env.TARBALL).toBe("${{ runner.temp }}/${{ steps.pack.outputs.tarball }}");
   expect(steps[archive].with.path).toBe(steps[probe].env.TARBALL);
   expect(steps[archive].with["if-no-files-found"]).toBe("error");
@@ -76,7 +124,7 @@ test("release workflow promotes one verified artifact only after main's manual n
   expect(checkoutIndex).toBeLessThan(release.steps.indexOf(cut));
   expect(cut.env.RELEASE_VERSION).toBe("${{ needs.publish.outputs.version }}");
   expect(cut.env.RELEASE_TARBALL).toBe("${{ runner.temp }}/release/${{ needs.publish.outputs.tarball }}");
-  for (const job of [publish, release]) {
+  for (const job of [plan, publish, release]) {
     expect(JSON.stringify(job.env ?? {})).not.toContain("runner.");
     for (const step of job.steps) {
       if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);

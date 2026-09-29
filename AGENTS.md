@@ -43,5 +43,7 @@ checks defined in [CI](.github/workflows/ci.yml).
   tracking. Confirmed teardown belongs to `session_shutdown`; preserve the
   cancelled-switch regression in `automatic-extension.test.ts`.
 - A checkout and an npm package with the same version need not contain the same
-  code. Verify the published artifact before changing install claims. Merging
-  does not publish npm; follow the README's explicit release workflow.
+  code. Verify the published artifact before changing install claims. Every push
+  to `main` publishes a release whose version is generated in CI, so the baseline
+  in `package.json` is not the version being shipped; [README.md](README.md) owns
+  the release procedure.
