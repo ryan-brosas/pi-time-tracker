@@ -68,7 +68,7 @@ jobs:
           bun-version: 1.4.0
       # The published package supports Node >= 22.19.0; every release gate and the
       # artifact probe run on that floor. npm OIDC is added later, only for publish.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.19.0'
           package-manager-cache: false
@@ -136,7 +136,7 @@ jobs:
       # Node 24 provides the npm release that supports OIDC trusted publishing.
       # It is added after the artifact is verified so the probe keeps running on the
       # floor the package claims to support.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
