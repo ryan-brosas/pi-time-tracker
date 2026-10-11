@@ -29,7 +29,7 @@ jobs:
         with:
           bun-version: 1.4.0
       # The published package supports Node >= 22.19.0; the artifact test runs on that floor.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.19.0'
       - name: Install native compiler dependency
